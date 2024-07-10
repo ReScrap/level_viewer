@@ -381,12 +381,8 @@ fn load_level(
                             .as_ref()
                             .and_then(|m| m.normal_map_texture.as_ref())
                             .is_some();
-                    let normal: Vec<_> = verts
-                        .iter()
-                        .map(|v| {
-                            v.normal.unwrap_or_default()
-                        })
-                        .collect();
+                    let normal: Vec<_> =
+                        verts.iter().map(|v| v.normal.unwrap_or_default()).collect();
                     let color: Vec<[f32; 4]> = verts
                         .iter()
                         .map(|v| {
@@ -442,14 +438,18 @@ fn load_level(
                         }
                         Ok(coords)
                     }
-                    let idx = faces.iter().copied().flat_map(|mut face| {
-                        face.swap(0,1);
-                        face
-                    }).collect::<Vec<_>>();
+                    let idx = faces
+                        .iter()
+                        .copied()
+                        .flat_map(|mut face| {
+                            face.swap(0, 1);
+                            face
+                        })
+                        .collect::<Vec<_>>();
                     // for face in idx.chunks_mut(3) {
                     //     face.swap(0,1);
                     //     // let face = face.iter().map(|&v| pos.get_mut(v as usize).unwrap()).collect::<Vec<_>>();
-                        
+
                     // }
                     let mut mesh = Mesh::new(
                         PrimitiveTopology::TriangleList,
