@@ -2,6 +2,15 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## 0.0.2 - 2024-07-11
+#### Build system
+- Fix post-bump hook - (cce5831) - Daniel Seiller
+#### Miscellaneous Chores
+- Fix post-bump hook - (83bde9a) - Daniel Seiller
+- fix post bump hook - (c7f6bd5) - Daniel Seiller
+
+- - -
+
 ## 0.0.1 - 2024-07-11
 #### Features
 - **(linux_support)** Add linux target - (09b2385) - Daniel S
