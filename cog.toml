@@ -12,8 +12,7 @@ pre_bump_hooks = [
     "cargo bump {{version}}"
 ]
 post_bump_hooks = [
-    "git push",
-    "git push {{version}}"
+    "git push"
 ]
 pre_package_bump_hooks = []
 post_package_bump_hooks = []
