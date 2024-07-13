@@ -34,7 +34,6 @@ use bevy::{
     window::{PresentMode, PrimaryWindow, WindowMode},
 };
 use bevy_atmosphere::plugin::{AtmosphereCamera, AtmospherePlugin};
-use bevy_editor_cam::{prelude::EditorCam, DefaultEditorCamPlugins};
 use bevy_egui::{
     egui::{self, RichText, ScrollArea},
     EguiContexts, EguiPlugin,
@@ -62,10 +61,10 @@ mod materials;
 mod packed_vfs;
 mod parser;
 
-#[derive(Component, Deref)]
+#[derive(Component, Deref, Debug)]
 struct MaterialName(String);
 
-#[derive(Component, Deref)]
+#[derive(Component, Deref, Debug)]
 struct MapNames(Vec<(String, String)>);
 
 #[derive(Resource)]
@@ -210,16 +209,7 @@ fn load_level(
                     }),
                     RenderAssetUsages::all(),
                 )
-                .expect("Failed to load iamge");
-                // rhexdump::rhexdump!(&img.data[..0x100]);
-                // let n_dim = match img.texture_descriptor.dimension {
-                //     bevy::render::render_resource::TextureDimension::D1 => 1,
-                //     bevy::render::render_resource::TextureDimension::D2 => 2,
-                //     bevy::render::render_resource::TextureDimension::D3 => 3,
-                // };
-                // dbg!(img.texture_descriptor.size);
-                // dbg!(n_dim);
-                // dbg!(img.texture_descriptor.format.components());
+                .unwrap_or_else(|e| panic!("Failed to load iamge {key}: {e}"));
                 textures.insert(key.clone(), ass.add(img));
             }
             let mut materials = BTreeMap::new();

@@ -84,8 +84,9 @@ impl MultiPack {
                     return Err(VfsErrorKind::FileNotFound.into());
                 };
                 let mm = Arc::clone(&file.mm);
+                let cursor = Cursor::new(Arc::from(&mm[data.clone()]));
                 Ok(FileHandle {
-                    cursor: Cursor::new(Arc::from(&mm[data.clone()])),
+                    cursor,
                     _mm: mm,
                     data: data.clone(),
                 })
