@@ -11,10 +11,6 @@ path-guid = "A8728CA0-C308-4C48-AB79-47ADC765A5C5"
 license = false
 eula = false
 
-[profile.release]
-# codegen-units = 1
-# lto = "thin"
-
 [profile.dev]
 opt-level = 3
 
@@ -26,48 +22,58 @@ opt-level = 3
 inherits = "release"
 lto = "thin"
 
+[features]
+# dev = ["bevy/dynamic_linking"]
 
 [dependencies]
-log = { version = "*", features = ["max_level_debug", "release_max_level_warn"] }
-anyhow = "1.0.83"
+log = { version = "0.4.22", features = ["max_level_debug", "release_max_level_warn"] }
+anyhow = "1.0.95"
 better-panic = "0.3.0"
 bilge = "0.2.0"
-binrw = "0.14"
-chrono = { version = "0.4.38", features = ["serde"] }
-clap = { version = "4.5.4", features = ["derive", "env"] }
-configparser = { version = "3.0.4", features = ["indexmap"] }
+binrw = "0.14.1"
+chrono = { version = "0.4.39", features = ["serde"] }
+clap = { version = "4.5.23", features = ["derive", "env"] }
+configparser = { version = "3.1.0", features = ["indexmap"] }
 enum-iterator = "2.1.0"
-fs-err = "2.11.0"
-indexmap = { version = "2.2.6", features = ["serde"] }
+fs-err = "3.0.0"
+indexmap = { version = "2.5.0", features = ["serde"] }
 ini = "1.3.0"
-memmap2 = "0.9.4"
+memmap2 = "0.9.5"
 num-derive = "0.4.2"
 num-traits = "0.2.19"
-regex = "1.10.4"
+regex = "1.11.1"
 rhexdump = "0.2.0"
-serde = { version = "1.0.201", features = ["derive"] }
-steamlocate = "1.2.1"
+serde = { version = "1.0.217", features = ["derive"] }
+steamlocate = "2.0.0"
 vfs = "0.12.0"
 walkdir = "2.5.0"
 # Bevy
-bevy = { version = "0.14", default-features = false, features = [
+bevy = { version = "0.15", default-features = false, features = [
+    "animation",
     "bmp",
     "dds",
     "tga",
     "png",
     "bevy_gizmos",
+    "bevy_ui",
+    "bevy_window",
     "multi_threaded",
     "tonemapping_luts",
     "x11",
-    # "dynamic_linking"
+    "sysinfo_plugin",
+    "bevy_mesh_picking_backend",
+    "bevy_picking",
+    "dynamic_linking"
 ] }
-bevy_atmosphere = "0.10"
-bevy_egui = "0.28.0"
-bevy-inspector-egui = "0.25.0"
-iyes_perf_ui = { version = "0.3", features = ["chrono"] }
+bevy_atmosphere = "0.12"
+bevy_egui = "0.31.1"
+bevy-inspector-egui = "0.28.1"
 bevy_mod_raycast = "0.18.0"
-smooth-bevy-cameras = "0.12.0"
-egui_file = "0.18.0"
+smooth-bevy-cameras = "0.13.0"
+egui_file = "0.20.0"
+petgraph = "0.7.0"
+rstar = { version = "0.12.2", features = ["mint"] }
+bevy_cursor = { version = "0.5.0", features = ["3d"] }
 
 # Config for 'cargo dist'
 [workspace.metadata.dist]
