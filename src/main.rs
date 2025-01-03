@@ -1,3 +1,4 @@
+use core::f32;
 use std::{
     collections::{BTreeMap, HashMap},
     hash::Hash,
@@ -20,6 +21,7 @@ use bevy::{
         CompressedImageFormats, Image, ImageAddressMode, ImageFilterMode, ImageSampler,
         ImageSamplerDescriptor, ImageType,
     },
+    log::tracing_subscriber::fmt::format,
     math::{Affine3, Affine3A},
     pbr::{
         wireframe::{Wireframe, WireframeColor, WireframeConfig, WireframePlugin},
@@ -32,11 +34,11 @@ use bevy::{
         render_resource::Face,
     },
     utils::warn,
-    window::{PresentMode, WindowMode},
+    window::{PresentMode, PrimaryWindow, WindowMode},
 };
 use bevy_atmosphere::plugin::{AtmosphereCamera, AtmospherePlugin};
 use bevy_egui::{
-    egui::{self, RichText, ScrollArea, TextureId as EguiTextureId},
+    egui::{self, RichText, ScrollArea, TextureId as EguiTextureId, TextureOptions},
     EguiContexts, EguiPlugin,
 };
 use bevy_inspector_egui::{quick::WorldInspectorPlugin, reflect_inspector};
@@ -285,18 +287,62 @@ fn node_color(node: &parser::Node) -> Color {
     }
 }
 
-fn show_dummies(mut gizmos: Gizmos, state: Res<State>) {
+fn show_text(
+    contexts: &mut EguiContexts,
+    text: &str,
+    pos: Vec3,
+    cam: &Camera,
+    win: &Window,
+    t_cam: &GlobalTransform,
+) {
+    let ctx = contexts.ctx_mut();
+    let c_pos = win.cursor_position();
+    if let Ok(screen_pos) = cam.world_to_viewport(t_cam, pos) {
+        if screen_pos.x < 0.0 || screen_pos.x > win.width() {
+            return;
+        }
+        if screen_pos.y < 0.0 || screen_pos.y > win.height() {
+            return;
+        }
+        let d_cursor = c_pos
+            .map(|p| (screen_pos.xy() - p).length())
+            .unwrap_or(f32::INFINITY);
+        let d_world = (pos - t_cam.translation()).length();
+        if d_cursor < 100.0 && d_world < 5.0 {
+            ctx.debug_painter().text(
+                [screen_pos.x, screen_pos.y].into(),
+                egui::Align2::CENTER_CENTER,
+                text,
+                egui::FontId::monospace((20.0 / d_world).clamp(0.0, 20.0)),
+                egui::Color32::WHITE,
+            );
+        }
+    };
+}
+
+fn show_dummies(
+    mut gizmos: Gizmos,
+    state: Res<State>,
+    cam: Query<(&Camera, &GlobalTransform)>,
+    mut contexts: EguiContexts,
+    win: Query<&Window, With<PrimaryWindow>>,
+) {
     use parser::NodeData;
     if !state.show_nodes {
         return;
     }
+    let win = win.single();
+    let (cam, t_cam) = cam.single();
     let Some(ParsedData::Level(lvl)) = state.data.as_ref() else {
         return;
     };
     for dum in &lvl.dummies.dummies {
+        let name = dum.name.string.as_str();
+        let pos: Vec3 = transform_pos(dum.pos).into();
+        show_text(&mut contexts, name, pos, cam, win, t_cam);
         gizmos.sphere(
             Isometry3d::new(
-                transform_pos(dum.pos),
+                pos,
                 Quat::from_euler(EulerRot::XYZ, dum.rot[0], dum.rot[1], dum.rot[2]),
             ),
             state.dummy_size,
@@ -309,13 +355,17 @@ fn show_dummies(mut gizmos: Gizmos, state: Res<State>) {
         };
         for node in &sm3.scene.nodes {
             // LinearRgba::BLUE
-            let t = Affine3A::from_mat4(Mat4::from_cols_array_2d(&node.transform));
-            let t_inv = Affine3A::from_mat4(Mat4::from_cols_array_2d(&node.transform_inv));
-            // dbg!(&node.name.string);
-            // dbg!(&t);
-            // dbg!(&t_inv);
-            // dbg!(t.inverse());
-            // dbg!(t_inv.inverse());
+            // let t = Affine3A::from_mat4(Mat4::from_cols_array_2d(&node.transform));
+            // let t_inv = Affine3A::from_mat4(Mat4::from_cols_array_2d(&node.transform_inv));
+            let label = format!("{}: {}", node_type(&node.content), node.name.string);
+            show_text(
+                &mut contexts,
+                &label,
+                transform_pos(node.pos_offset).into(),
+                cam,
+                win,
+                t_cam,
+            );
             gizmos.sphere(
                 Isometry3d::new(
                     transform_pos(node.pos_offset),
@@ -751,6 +801,9 @@ fn mesh_clicked(
     if egui_waints_input {
         return;
     }
+    if trigger.button != PointerButton::Primary {
+        return;
+    }
     let ent = trigger.entity();
     if let Some(old_ent) = state.picked_object.replace(ent) {
         if let Some(mut e) = commands.get_entity(old_ent) {
@@ -832,7 +885,7 @@ fn inspector(
     )>,
 ) {
     if state.show_ui {
-        if let Some((mat, mat_name, map_names, map_tex)) =
+        if let Some((_, _, map_names, map_tex)) =
             state.picked_object.and_then(|ent| mat.get(ent).ok())
         {
             for (slot, tex_name) in map_names.iter() {
@@ -857,14 +910,13 @@ fn inspector(
             } else {
                 ui.heading(format!("{ent:?}"));
             }
-            let Ok((mat, mat_name, map_names, map_tex)) = mat.get(ent) else {
+            let Ok((_, mat_name, map_names, _)) = mat.get(ent) else {
                 return;
             };
             let mat_name = mat_name.as_str();
             // let mat = materials.get(mat);
             ui.label(format!("Material: {mat_name}"));
             // dbg!(&map_names);
-            // TODO: image preview
             for (slot, tex_name) in map_names.iter() {
                 let resp = ui.label(format!("{slot:?}: {tex_name}"));
                 if resp.hovered() {
@@ -875,10 +927,15 @@ fn inspector(
                         let Some(img) = images.get(img) else {
                             return;
                         };
-                        ui.add(egui::widgets::Image::new(egui::load::SizedTexture::new(
-                            *tex_id,
-                            [img.width() as f32, img.height() as f32],
-                        )).max_size([256.0, 256.0].into()));
+                        ui.add(
+                            egui::widgets::Image::new(egui::load::SizedTexture::new(
+                                *tex_id,
+                                [img.width() as f32, img.height() as f32],
+                            ))
+                            .max_size([256.0, 256.0].into())
+                            .rounding(0.5)
+                            .maintain_aspect_ratio(true),
+                        );
                     });
                 }
             }
@@ -1398,8 +1455,8 @@ fn setup(mut commands: Commands) {
                 low_frequency_boost_curvature: 0.0,
                 high_pass_frequency: 1.0,
                 prefilter: BloomPrefilter {
-                    threshold: 1.0,
-                    threshold_softness: 0.0,
+                    threshold: 2.0,
+                    threshold_softness: 1.0,
                 },
                 composite_mode: BloomCompositeMode::Additive,
                 ..Default::default()
@@ -1409,7 +1466,7 @@ fn setup(mut commands: Commands) {
             //     mode: DepthOfFieldMode::Bokeh,
             //     ..default()
             // },
-            AtmosphereCamera::default(),
+            // AtmosphereCamera::default(),
         ))
         .insert(UnrealCameraBundle::new(
             UnrealCameraController {
