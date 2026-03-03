@@ -5,9 +5,10 @@
   - [?] Figure out how materials are assigned
 - [x] Fix holo transparency
 - [x] AMC Collision meshes
+- [x] Animation parser
 - [?] Write custom shaders to mirror Scrapland's DX8 Pixel Shaders
 - [ ] WASM to run in the browser
-
+- [ ] binwrite support
 
 ## Notes:
 
