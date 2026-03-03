@@ -25,7 +25,7 @@ fn fragment(
     @builtin(front_facing) is_front: bool,
 ) -> FragmentOutput {
     var pbr_input = pbr_input_from_standard_material(in, is_front);
-    pbr_input.material.base_color *= vec4(4.0,4.0,4.0,1.0);
+    pbr_input.material.base_color *= vec4(4.0,4.0,4.0,1.0); // boost brightness
     pbr_input.material.base_color = alpha_discard(pbr_input.material, pbr_input.material.base_color);
 #ifdef PREPASS_PIPELINE
     let out = deferred_output(in, pbr_input);

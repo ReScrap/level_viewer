@@ -1,0 +1,81 @@
+[package]
+authors=["Earthnuker <earthnuker@gmail.com>"]
+name = "level_viewer"
+version = "0.2.0"
+edition = "2021"
+repository = "https://github.com/ReScrap/level_viewer"
+description = "A level viewer for the game American McGee's Scrapland"
+
+[package.metadata.wix]
+upgrade-guid = "C281C687-92B2-4DD0-B757-FA6CB11B151A"
+path-guid = "A8728CA0-C308-4C48-AB79-47ADC765A5C5"
+license = false
+eula = false
+
+[profile.dev]
+opt-level = 3
+
+[profile.dev.package."*"]
+opt-level = 3
+
+# The profile that 'cargo dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"
+
+[features]
+# dev = ["bevy/dynamic_linking"]
+
+[dependencies]
+log = { version = "0.4", features = ["max_level_debug", "release_max_level_warn"] }
+anyhow = "1.0"
+better-panic = "0.3.0"
+bilge = "0.2.0"
+binrw = "0.14.1"
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4.5", features = ["derive", "env"] }
+configparser = { version = "3.1.0", features = ["indexmap"] }
+enum-iterator = "2.1"
+fs-err = "3.1"
+indexmap = { version = "2.8", features = ["serde"] }
+ini = "1.3"
+memmap2 = "0.9"
+num-derive = "0.4"
+num-traits = "0.2"
+regex = "1.11"
+rhexdump = "0.2"
+serde = { version = "1.0", features = ["derive"] }
+steamlocate = "2.0"
+vfs = "0.12"
+walkdir = "2.5"
+# Bevy
+bevy = { version = "0.15", default-features = false, features = [
+    "animation",
+    "bevy_asset",
+    "bmp",
+    "dds",
+    "tga",
+    "png",
+    "bevy_gizmos",
+    "bevy_ui",
+    "bevy_window",
+    "multi_threaded",
+    "tonemapping_luts",
+    "x11",
+    "sysinfo_plugin",
+    "bevy_mesh_picking_backend",
+    "bevy_picking",
+    "dynamic_linking",
+] }
+bevy_atmosphere = "0.12"
+bevy-inspector-egui = "0.30"
+smooth-bevy-cameras = "0.13.0"
+egui_file = "0.22"
+petgraph = "0.7"
+rstar = { version = "0.12", features = ["mint"] }
+rfd = "0.15"
+itertools = "0.14.0"
+leafwing-input-manager = "0.16.0"
+pid = "4.0.0"
+byteorder = "1.5.0"
+parry3d = "0.18.0"
