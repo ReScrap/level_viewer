@@ -5,8 +5,7 @@ use bevy::{
     asset::{
         AssetLoader, AsyncReadExt, VisitAssetDependencies,
         io::{
-            AssetReader, AssetReaderError, AssetReaderFuture, AssetSource, AssetSourceId, Reader,
-            SliceReader,
+            AssetReader, AssetReaderError, AssetReaderFuture, AssetSource, AssetSourceBuilder, AssetSourceId, Reader, SliceReader
         },
     },
     prelude::*,
@@ -40,9 +39,8 @@ impl Plugin for PackedAssetRepositoryPlugin {
         app.insert_resource(self.repository.clone());
         app.register_asset_source(
             AssetSourceId::Name("packed".into()),
-            AssetSource::build()
-                .with_reader(move || Box::new(repository_1.clone()))
-                .with_processed_reader(move || Box::new(repository_2.clone())),
+            AssetSourceBuilder::new(move || Box::new(repository_1.clone()))
+                .with_processed_reader(move || Box::new(repository_2.clone()))
         );
     }
 }
@@ -123,6 +121,7 @@ impl TypePath for TestAsset {
     }
 }
 
+#[derive(TypePath)]
 pub(crate) struct TestLoader;
 
 impl AssetLoader for TestLoader {
@@ -138,7 +137,7 @@ impl AssetLoader for TestLoader {
         settings: &Self::Settings,
         load_context: &mut bevy::asset::LoadContext<'_>,
     ) -> Result<Self::Asset, Self::Error> {
-        println!("[LOAD_ASSET] {path:?}!", path = load_context.asset_path());
+        println!("[LOAD_ASSET] {path:?}!", path = load_context.path());
         let mut data = vec![];
         reader.read_to_end(&mut data).await?;
         Ok(TestAsset(data[..0x10].to_vec()))
