@@ -149,14 +149,9 @@ fn main() -> Result<()> {
         .add_systems(Startup, setup)
         .add_systems(
             Update,
-            (
-                ui_input_toggle,
-                browser,
-                autofocus,
-                entity_picker,
-                keyboard_handler,
-            ),
+            (ui_input_toggle, browser, entity_picker, keyboard_handler),
         )
+        .add_systems(FixedUpdate, autofocus)
         .init_gizmo_group::<DefaultGizmoConfigGroup>()
         .run();
     Ok(())
@@ -504,11 +499,17 @@ fn ui_input_toggle(mut contexts: EguiContexts, mut cam_ctrl: Query<&mut UnrealCa
         !(egui_ctx.wants_keyboard_input() || egui_ctx.wants_pointer_input());
 }
 
+fn lerp(a: f32, b: f32, t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    a * (1.0 - t) + b * t
+}
+
 fn autofocus(
     mut raycast: Raycast,
     mut cam: Query<(&Camera, &Transform, &mut DepthOfFieldSettings)>,
     cursor_ray: Res<CursorRay>,
     keyboard: Res<ButtonInput<KeyCode>>,
+    time: Res<Time>
 ) {
     let cam = cam.get_single_mut().unwrap();
     let (_, tr, mut dof) = cam;
@@ -531,7 +532,10 @@ fn autofocus(
     }) else {
         return;
     };
-    dof.focal_distance = hit.distance();
+
+    let l: f32 = 0.1;
+    let dt = time.delta().as_secs_f32();
+    dof.focal_distance = lerp(dof.focal_distance, hit.distance(), dt/l);
 }
 
 #[allow(clippy::too_many_arguments)]
