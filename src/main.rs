@@ -256,7 +256,6 @@ fn main() -> Result<()> {
     color_eyre::install()?;
     let packed_files = get_packed_files()?;
     let fs = MultiPackFS::new(&packed_files)?;
-    let entries = fs.entries()?;
     // for sm3_entry in &entries {
     //     if !sm3_entry.path.ends_with(".sm3") {
     //         continue;
@@ -275,7 +274,7 @@ fn main() -> Result<()> {
     //         println!("+ {}", cm3_entry.path);
     //     }
     // return Ok(());
-    // }
+    // // }
     // {
     //     let mut total = 0;
     //     let mut failed = 0;
@@ -294,16 +293,14 @@ fn main() -> Result<()> {
     //                 ParsedData::Data(Data::CM3(CM3 {
     //                     scene: parser::SCN { ref ani, .. },
     //                     ..
-    //                 })) => ani,
-    //                 ParsedData::Data(Data::SM3(SM3 {
+    //                 })) | ParsedData::Data(Data::SM3(SM3 {
     //                     scene: parser::SCN { ref ani, .. },
     //                     ..
-    //                 })) => ani,
+    //                 })) => ani.get(),
     //                 _ => {
     //                     continue;
     //                 }
     //             }
-    //             .get()
     //             {
     //                 for track in ani.track_map.iter().filter_map(|v| *v) {
     //                     if ani.get_track(track as usize).is_err() {
@@ -349,37 +346,37 @@ fn main() -> Result<()> {
     //     serde_json::to_writer(&mut fh, &dump_map)?;
     //     return Ok(());
     // }
-    {
-        let mut track_map: HashMap<&str, AnimTracks> = HashMap::new();
-        let model = "/levels/fake/map/fake2/fake2.sm3";
-        let anm = "/levels/fake/map/fake2/fake2anm/play.cm3";
-        let ParsedData::Data(Data::SM3(sm3)) = fs.parse_file(model)? else {
-            bail!("Failed to parse model!")
-        };
-        let ParsedData::Data(Data::CM3(cm3)) = fs.parse_file(anm)? else {
-            bail!("Failed to parse animation!")
-        };
-        let Some(ani) = cm3.scene.ani.get() else {
-            bail!("No animation data found in CM3!");
-        };
-        println!("Model: {model}");
-        println!("Animation: {anm}");
-        for node in &sm3.scene.nodes {
-            if node.object_index >= 0 {
-                let idx: usize = node.object_index.try_into()?;
-                if let Some(track) =
-                    ani.track_map[idx].and_then(|v| ani.get_track(v as usize).ok().flatten())
-                {
-                    track_map.insert(&*node.name, track);
-                    let nam = &ani.tracks[ani.track_map[idx].unwrap() as usize];
-                    println!("{}: {:?}", node.name, nam.cm3_flags);
-                }
-            }
-        }
-        // let mut fh = BufWriter::new(fs_err::File::create("dump.json")?);
-        // serde_json::to_writer(&mut fh, &track_map)?;
-        return Ok(());
-    }
+    // {
+    //     let mut track_map: HashMap<&str, AnimTracks> = HashMap::new();
+    //     let model = "/levels/fake/map/fake2/fake2.sm3";
+    //     let anm = "/levels/fake/map/fake2/fake2anm/play.cm3";
+    //     let ParsedData::Data(Data::SM3(sm3)) = fs.parse_file(model)? else {
+    //         bail!("Failed to parse model!")
+    //     };
+    //     let ParsedData::Data(Data::CM3(cm3)) = fs.parse_file(anm)? else {
+    //         bail!("Failed to parse animation!")
+    //     };
+    //     let Some(ani) = cm3.scene.ani.get() else {
+    //         bail!("No animation data found in CM3!");
+    //     };
+    //     println!("Model: {model}");
+    //     println!("Animation: {anm}");
+    //     for node in &sm3.scene.nodes {
+    //         if node.object_index >= 0 {
+    //             let idx: usize = node.object_index.try_into()?;
+    //             if let Some(track) =
+    //                 ani.track_map[idx].and_then(|v| ani.get_track(v as usize).ok().flatten())
+    //             {
+    //                 track_map.insert(&*node.name, track);
+    //                 let nam = &ani.tracks[ani.track_map[idx].unwrap() as usize];
+    //                 println!("{}: {:?}", node.name, nam.cm3_flags);
+    //             }
+    //         }
+    //     }
+    //     // let mut fh = BufWriter::new(fs_err::File::create("dump.json")?);
+    //     // serde_json::to_writer(&mut fh, &track_map)?;
+    //     return Ok(());
+    // }
     let state = State {
         fs,
         data_path: std::env::args().nth(1),
@@ -2365,8 +2362,8 @@ fn load_sm3(
             continue;
         };
         let ent = node_to_ent(&mut commands, node, &mut materials, &mut meshes);
-        if let Some(NodeData::D3DMesh(mesh)) = node.content.get() {
-            if let Some(mat) = mesh_materials.get(&(mesh.mat_index as usize)) {
+        if let Some(NodeData::D3DMesh(mesh)) = node.content.get()
+            && let Some(mat) = mesh_materials.get(&(mesh.mat_index as usize)) {
                 for e in &ent {
                     commands
                         .entity(*e)
@@ -2374,7 +2371,6 @@ fn load_sm3(
                         .insert(MeshMaterial3d(ass.add(mat.clone())));
                 }
             }
-        }
         ents.insert(node_name, (node, ent));
     }
     let mut q = Vec::new();
