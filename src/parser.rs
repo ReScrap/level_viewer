@@ -9,7 +9,7 @@ use std::{
 use anyhow::{anyhow, bail, Result};
 use bilge::prelude::*;
 use binrw::{args, helpers::until_exclusive, prelude::*};
-use chrono::{DateTime, NaiveDateTime, Utc};
+use chrono::{DateTime, Utc};
 use configparser::ini::Ini;
 use enum_iterator::Sequence;
 use indexmap::IndexMap;
@@ -382,12 +382,12 @@ pub(crate) struct MD3D {
     pub tris: MD3D_Tris,
     pub verts: LFVF,
     unk_table_1: RawTable<2>, // Vert orig
-    unk_int_1: u32,
+    pub unk_int_1: u32,
     unk_table_2: RawTable<0x10>,
     unk_table_3: RawTable<8>,
     unk_table_4: RawTable<0xc>,
     unk_table_5: RawTable<4>, // Tri Flags
-    unk_int_2: u32,
+    pub unk_int_2: u32,
     #[br(if(unk_int_2==0))]
     unk_table_6: Option<RawTable<0x10>>,
     unk_int_4: u32,
@@ -563,21 +563,21 @@ fn parse_node_flags(flags: u32) -> BTreeSet<NodeFlags> {
 #[binread]
 #[derive(Debug, Serialize)]
 pub(crate) struct Node {
-    node_index: i32,
-    unk_idx_1: i32,
-    unk_idx_2: i32,
+    pub node_index: i32,
+    pub unk_idx_1: i32,
+    pub unk_idx_2: i32,
     #[br(map=parse_node_flags)]
     pub flags: BTreeSet<NodeFlags>,
-    unk_f20_0x50: i32,
+    pub unk_f20_0x50: i32,
     pub name: PascalString,
-    parent: PascalString,
+    pub parent: PascalString,
     pub pos_offset: [f32; 3],
-    rot: [f32; 4],
+    pub rot: [f32; 4],
     pub scale: f32,
     pub transform: [[f32; 4]; 4], // 0x40 4x4 Matrix
-    transform_inv: [[f32; 4]; 4], // 0x40 4x4 Matrix
-    unk_rot: [f32; 4],
-    axis_scale: [f32; 3],
+    pub transform_inv: [[f32; 4]; 4], // 0x40 4x4 Matrix
+    pub unk_rot: [f32; 4],
+    pub axis_scale: [f32; 3],
     pub info: Optional<INI>,
     pub content: Optional<NodeData>,
 }
@@ -647,7 +647,7 @@ pub(crate) struct SCN {
     #[br(temp)]
     num_materials: u32,
     #[br(count=num_materials)]
-    mat: Vec<MAT>,
+    pub mat: Vec<MAT>,
     #[br(temp,assert(unk_3==1))]
     unk_3: u32,
     #[br(temp)]
@@ -658,10 +658,10 @@ pub(crate) struct SCN {
 }
 
 fn convert_timestamp(dt: u32) -> Result<DateTime<Utc>> {
-    let Some(dt) = NaiveDateTime::from_timestamp_opt(dt.into(), 0) else {
+    let Some(dt) = DateTime::from_timestamp(dt.into(), 0) else {
         bail!("Invalid timestamp");
     };
-    Ok(DateTime::from_naive_utc_and_offset(dt, Utc))
+    Ok(dt)
 }
 
 #[binread]
@@ -685,6 +685,21 @@ struct EVA {
     verts: Vec<Optional<VertexAnim>>,
 }
 
+#[repr(u32)]
+pub enum StmFlags {
+    ani_pos = 0x1
+}
+
+#[repr(u32)]
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Sequence, Serialize, ToPrimitive)]
+pub enum OptFlags {
+    anim_pos = 0x1,
+    ani_rot = 0x2,
+    anim_color_intens = 0x18,
+    anim_visible = 0x80
+}
+
+
 #[binread]
 #[br(magic = b"NAM\0")]
 #[derive(Debug, Serialize)]
@@ -700,20 +715,18 @@ struct NAM {
     opt_flags: u32,
     #[br(assert(stm_flags&0xfff8==0,"Invalid NAM stm_flags"))]
     stm_flags: u32,
-    #[br(map=|_:()| flags&(opt_flags|0x8000)&stm_flags)]
-    combined_flags: u32,
-    #[br(if(combined_flags&0x1!=0))]
-    unk_flags_1: Option<u32>,
-    #[br(if(combined_flags&0x2!=0))]
-    unk_flags_2: Option<u32>,
-    #[br(if(combined_flags&0x4!=0))]
-    unk_flags_3: Option<u32>,
-    #[br(if(combined_flags&0x8!=0))]
-    unk_flags_4: Option<u32>,
-    #[br(if(combined_flags&0x10!=0))]
-    unk_flags_5: Option<u32>,
-    #[br(if(combined_flags&0x80!=0))]
-    unk_flags_6: Option<u32>,
+    #[br(if(flags&0x1!=0),count=0xc)]
+    unk_flags_1: Option<Vec<u8>>,
+    #[br(if(flags&0x2!=0),count=0x10)]
+    unk_flags_2: Option<Vec<u8>>,
+    #[br(if(flags&0x4!=0),count=4)]
+    unk_flags_3: Option<Vec<u8>>,
+    #[br(if(flags&0x8!=0),count=4)]
+    unk_flags_4: Option<Vec<u8>>,
+    #[br(if(flags&0x10!=0),count=4)]
+    unk_flags_5: Option<Vec<u8>>,
+    #[br(if(flags&0x80!=0),count=1)]
+    unk_flags_6: Option<Vec<u8>>,
     #[br(if(flags&0x1000!=0))]
     eva: Option<EVA>,
 }
@@ -735,8 +748,8 @@ struct ANI {
     #[br(assert(version==2, "Invalid ANI version"))]
     version: u32,
     fps: f32,
-    unk_1: u32,
-    unk_2: u32,
+    first_frame: u32,
+    last_frame: u32,
     num_objects: u32,
     unk_flags: u32,
     num: u32,
@@ -848,9 +861,10 @@ struct QUAD {
     mesh: u32,
     table: Table<u16>,
     f_4: [f32; 4],
+    #[br(temp)]
     num_children: u32,
     #[br(count=num_children)]
-    children: Vec<QUAD>,
+    pub children: Vec<QUAD>,
 }
 
 #[binread]
@@ -886,7 +900,7 @@ struct EmptyAMC {
 #[binread]
 #[br(magic = b"AMC\0")]
 #[derive(Debug, Serialize)]
-struct AMC {
+pub(crate) struct AMC {
     size: u32,
     #[br(assert(version==100,"Invalid AMC version"))]
     version: u32,
@@ -903,9 +917,10 @@ struct AMC {
     grid_size: [u32; 2],
     grid_scale: [f32; 2],
     unk_f: [f32; 2],
+    #[br(temp)]
     num_quads: u32,
     #[br(count=num_quads)]
-    quads: Vec<QUAD>,
+    pub quads: Vec<QUAD>,
     #[br(temp)]
     _empty_amc: EmptyAMC,
 }
@@ -992,7 +1007,7 @@ impl EMI {
 #[binread]
 #[derive(Debug, Serialize)]
 #[serde(tag = "type")]
-enum Data {
+pub(crate) enum Data {
     SM3(SM3),
     CM3(CM3),
     DUM(DUM),
