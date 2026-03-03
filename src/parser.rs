@@ -122,21 +122,33 @@ impl<T: for<'a> BinRead<Args<'a> = ()> + for<'a> BinWrite<Args<'a> = bool> + Ser
 }
 
 fn encode_pascal_string(string: &str) -> Vec<u8> {
-    let mut bytes = string.as_bytes().to_vec();
-    if !bytes.ends_with(&[0]) {
-        bytes.push(0);
+    if string.is_empty() {
+        return vec![];
     }
-    bytes
+    let mut bytes = latin1str::Latin1String::encode(string)
+        .as_bytes()
+        .to_owned();
+    if !bytes.ends_with(&[0]) {
+        bytes.push(0)
+    }
+    return bytes;
+}
+
+fn decode_pascal_string(bytes: &[u8]) -> String {
+    let mut bytes = bytes.to_vec();
+    latin1str::Latin1Str::from_bytes_until_nul(&bytes)
+        .decode()
+        .to_string()
 }
 
 #[binrw]
 #[derive(Clone)]
 pub(crate) struct PascalString {
     #[br(temp)]
-    #[bw(try_calc = encode_pascal_string(&string).len().try_into())]
+    #[bw(try_calc = encode_pascal_string(string).len().try_into())]
     length: u32,
     #[br(count=length, map=|bytes: Vec<u8>| {
-        String::from_utf8_lossy(&bytes.iter().copied().take_while(|&v| v!=0).collect::<Vec<u8>>()).into_owned()
+        decode_pascal_string(&bytes)
     })]
     #[bw(map = |value: &String| encode_pascal_string(value))]
     pub string: String,
