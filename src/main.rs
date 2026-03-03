@@ -2931,7 +2931,7 @@ impl CameraBundle {
                 )
                 .with_axis(
                     DroneAction::Roll,
-                    VirtualAxis::new(KeyCode::KeyQ, KeyCode::KeyE),
+                    VirtualAxis::new(KeyCode::KeyQ, KeyCode::KeyE).inverted(),
                 )
                 .with_axis(
                     DroneAction::Throttle,
@@ -2949,8 +2949,8 @@ impl CameraBundle {
                     DroneAction::Yaw,
                     GamepadStick::RIGHT.with_circle_deadzone(0.01).x,
                 )
-                .with_axis(DroneAction::Pitch, MouseMoveAxis::Y.sensitivity(0.08))
-                .with_axis(DroneAction::Yaw, MouseMoveAxis::X.sensitivity(0.08))
+                .with_axis(DroneAction::Pitch, MouseMoveAxis::Y.sensitivity(0.5).inverted())
+                .with_axis(DroneAction::Yaw, MouseMoveAxis::X.sensitivity(0.5))
                 .with(DroneAction::Boost, GamepadButton::RightTrigger)
                 .with(DroneAction::Boost, MouseButton::Right)
                 .with(DroneAction::TurnBoost, GamepadButton::LeftTrigger)
