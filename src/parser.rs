@@ -228,6 +228,22 @@ mod string_encoding_tests {
         assert_eq!(out.len(), bytes.len(), "{file}: length mismatch");
         assert_eq!(out, bytes, "{file}: binary mismatch");
     }
+
+    #[test]
+    fn md3d_skin_weights_accept_null_and_roundtrip() {
+        #[derive(serde::Serialize, serde::Deserialize)]
+        struct Wrap {
+            skin: super::MD3D_Skin,
+        }
+
+        let json = r#"{"skin":{"influence_count":3,"bone_indices":[1,2,3],"weights":[0.5,null,0.5]}}"#;
+        let parsed: Wrap = serde_json::from_str(json).unwrap();
+        assert!(parsed.skin.weights[1].is_nan());
+
+        let out = serde_json::to_string(&parsed).unwrap();
+        let out_v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(out_v["skin"]["weights"][1], serde_json::Value::Null);
+    }
 }
 
 #[binrw]
@@ -908,7 +924,28 @@ pub(crate) struct MD3D_Segment {
 pub(crate) struct MD3D_Skin {
     pub influence_count: u8,
     pub bone_indices: [u8; 3],
+    #[serde(with = "skin_weights_serde")]
     pub weights: [f32; 3],
+}
+
+mod skin_weights_serde {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub(super) fn serialize<S>(value: &[f32; 3], serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let out: [Option<f32>; 3] = value.map(|v| if v.is_finite() { Some(v) } else { None });
+        out.serialize(serializer)
+    }
+
+    pub(super) fn deserialize<'de, D>(deserializer: D) -> std::result::Result<[f32; 3], D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = <[Option<f32>; 3]>::deserialize(deserializer)?;
+        Ok(value.map(|v| v.unwrap_or(f32::NAN)))
+    }
 }
 
 #[binrw]
