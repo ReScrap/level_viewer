@@ -248,6 +248,7 @@ Notes:
 - Purpose: Scene animation container.
 - Invariants: `version == 2`.
 - Fields: fps, frame bounds, object/node counts, node-to-track map, raw `NABK` data bytes, per-object `NAM` tracks.
+- Binary ordering note: frame bounds are stored as `last_frame` then `first_frame` in the on-disk `ANI` block.
 - Helper: `get_track(index)` decodes channel payloads from `NABK` using per-block metadata.
 - Ghidra cross-check: `read_ANI` enforces version 2 and reads nested `NABK` before `NAM` list.
 
@@ -370,3 +371,4 @@ The following parser invariants are directly mirrored in game loader assertions/
 Recent alignment updates based on Ghidra:
 - `MAT` map serialization now follows engine behavior: 3 maps for v1/v2, 5 for v3.
 - `NAM.opt_flags` now matches file semantics from engine read/write paths (supported low bits only; no forced on-disk `0x8000`).
+- `ANI` frame bounds now match engine disk ordering (`last_frame` then `first_frame`).
