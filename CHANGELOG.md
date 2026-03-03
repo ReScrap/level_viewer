@@ -2,6 +2,17 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## 0.0.1 - 2024-07-11
+#### Features
+- **(linux_support)** Add linux target - (09b2385) - Daniel S
+#### Miscellaneous Chores
+- **(version)** 0.0.1 - (ebea57c) - Daniel Seiller
+- cocogitto setup - (50a463f) - Daniel Seiller
+- cargo-dist setup - (268d1eb) - Daniel Seiller
+- Initial Commit - (60f656e) - Daniel Seiller
+
+- - -
+
 ## 0.0.1 - 2024-07-10
 #### Miscellaneous Chores
 - cocogitto setup - (bc00749) - Daniel Seiller
