@@ -948,6 +948,30 @@ mod skin_weights_serde {
     }
 }
 
+mod scale_serde {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    
+    pub(super) fn serialize<S>(value: &f32, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        // Convert NaN to null, finite values to themselves
+        if value.is_finite() {
+            serializer.serialize_f32(*value)
+        } else {
+            serializer.serialize_none()
+        }
+    }
+    
+    pub(super) fn deserialize<'de, D>(deserializer: D) -> Result<f32, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = Option::<f32>::deserialize(deserializer)?;
+        Ok(value.unwrap_or(f32::NAN))
+    }
+}
+
 #[binrw]
 #[brw(magic = b"MD3D")]
 #[bw(import_raw(compute: bool))]
@@ -1224,6 +1248,7 @@ pub(crate) struct Node {
     pub parent: PascalString,
     pub pos_offset: [f32; 3],
     pub rot: [f32; 4],
+    #[serde(with = "scale_serde")]
     pub scale: f32,
     pub transform_world: [[f32; 4]; 4], // 0x40 4x4 Matrix
     pub transform_local: [[f32; 4]; 4], // 0x40 4x4 Matrix
