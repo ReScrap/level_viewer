@@ -318,6 +318,8 @@ fn main() -> Result<()> {
                 let ParsedData::Data(data) = data else {
                     continue;
                 };
+                let data = serde_json::to_string(&data)?;
+                let data: Data = serde_json::from_str(&data)?;
                 let mut orig_bytes = Vec::new();
                 let mut orig_file = fs.open_file(&entry.path).unwrap();
                 orig_file.read_to_end(&mut orig_bytes).unwrap();
