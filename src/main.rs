@@ -252,7 +252,6 @@ fn dump_ani(fs: &MultiPackFS, sm3: &str, cm3: &str) -> Result<HashMap<String, An
 }
 
 fn main() -> Result<()> {
-
     color_eyre::install()?;
     let packed_files = get_packed_files()?;
     let fs = MultiPackFS::new(&packed_files)?;
@@ -2363,18 +2362,19 @@ fn load_sm3(
         };
         let ent = node_to_ent(&mut commands, node, &mut materials, &mut meshes);
         if let Some(NodeData::D3DMesh(mesh)) = node.content.get()
-            && let Some(mat) = mesh_materials.get(&(mesh.mat_index as usize)) {
-                for e in &ent {
-                    let scrap_mat = ExtendedMaterial {
-                        base: mat.clone(),
-                        extension: TestMaterial::default(),
-                    };
-                    commands
-                        .entity(*e)
-                        .remove::<MeshMaterial3d<ScrapMaterial>>()
-                        .insert(MeshMaterial3d(ass.add(scrap_mat)));
-                }
+            && let Some(mat) = mesh_materials.get(&(mesh.mat_index as usize))
+        {
+            for e in &ent {
+                let scrap_mat = ExtendedMaterial {
+                    base: mat.clone(),
+                    extension: TestMaterial::default(),
+                };
+                commands
+                    .entity(*e)
+                    .remove::<MeshMaterial3d<ScrapMaterial>>()
+                    .insert(MeshMaterial3d(ass.add(scrap_mat)));
             }
+        }
         ents.insert(node_name, (node, ent));
     }
     let mut q = Vec::new();
@@ -2720,6 +2720,8 @@ impl DroneCam {
         let (mut tran, mut drone, mut blur, input_state) = query.single_mut()?;
         let mut throttle = input_state.clamped_value(&DroneAction::Throttle);
         throttle = throttle.powf(2.0).copysign(throttle);
+        let mut strafe = input_state.clamped_value(&DroneAction::Strafe);
+        strafe = strafe.powf(2.0).copysign(strafe);
         let mut yaw = input_state.clamped_value(&DroneAction::Yaw);
         yaw = yaw.powf(2.0).copysign(yaw);
         let mut pitch = input_state.clamped_value(&DroneAction::Pitch);
@@ -2737,7 +2739,9 @@ impl DroneCam {
         let dt = time.delta_secs();
         turn_rate *= 1.0 + turn_boost * 2.0;
         if boost > 0.0 {
-            throttle *= 1.0 + 2.0 * drone.boost;
+            let boost_mult = 1.0 + 2.0 * drone.boost;
+            throttle *= boost_mult;
+            strafe *= boost_mult;
             blur.shutter_angle = 60.0 / 24.0 * 0.5;
         }
 
@@ -2754,7 +2758,7 @@ impl DroneCam {
 
         {
             // Translation
-            let acc = tran.forward() * throttle * state.thrust_power * dt;
+            let acc = (tran.forward() * throttle + tran.right() * strafe) * state.thrust_power * dt;
             drone.velocity += acc;
             let mv_dir = Dir3::new(drone.velocity);
             if mv_dir.is_ok() && state.cam_physics {
@@ -2851,6 +2855,8 @@ enum DroneAction {
     #[actionlike(Axis)]
     Throttle,
     #[actionlike(Axis)]
+    Strafe,
+    #[actionlike(Axis)]
     Yaw,
     #[actionlike(Axis)]
     Pitch,
@@ -2876,12 +2882,14 @@ impl CameraBundle {
         Self {
             camera: Camera3d::default(),
             inputs: InputMap::default()
+                .with_axis(DroneAction::Throttle, VirtualAxis::ws())
+                .with_axis(DroneAction::Strafe, VirtualAxis::ad())
                 .with_axis(
                     DroneAction::Throttle,
                     VirtualAxis::new(GamepadButton::LeftTrigger2, GamepadButton::RightTrigger2), // GamepadStick::LEFT.inverted_y().with_circle_deadzone(0.01).y,
                 )
                 .with_axis(
-                    DroneAction::Roll,
+                    DroneAction::Strafe,
                     GamepadStick::LEFT.with_circle_deadzone(0.01).x,
                 )
                 .with_axis(
@@ -2892,8 +2900,13 @@ impl CameraBundle {
                     DroneAction::Yaw,
                     GamepadStick::RIGHT.with_circle_deadzone(0.01).x,
                 )
+                .with_axis(DroneAction::Pitch, MouseMoveAxis::Y.sensitivity(0.08))
+                .with_axis(DroneAction::Yaw, MouseMoveAxis::X.sensitivity(0.08))
                 .with(DroneAction::Boost, GamepadButton::RightTrigger)
-                .with(DroneAction::TurnBoost, GamepadButton::LeftTrigger),
+                .with(DroneAction::Boost, MouseButton::Right)
+                .with(DroneAction::TurnBoost, GamepadButton::LeftTrigger)
+                .with(DroneAction::TurnBoost, KeyCode::ShiftLeft)
+                .with(DroneAction::TurnBoost, KeyCode::ShiftRight),
             hdr: Hdr,
             tonemapping: Tonemapping::AcesFitted,
             color_grading: ColorGrading {

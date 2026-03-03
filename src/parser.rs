@@ -1,4 +1,4 @@
-﻿#![allow(clippy::upper_case_acronyms, non_camel_case_types)]
+#![allow(clippy::upper_case_acronyms, non_camel_case_types)]
 use std::{
     borrow::Borrow,
     collections::{BTreeMap, BTreeSet, HashMap},
@@ -869,7 +869,6 @@ pub(crate) struct BlockInfo {
     pub track_type: AniTrackType,
 }
 
-
 #[derive(Debug, Default, Serialize)]
 pub(crate) struct AnimFrame {
     pub pos: Option<[f32; 3]>,
@@ -1129,7 +1128,7 @@ pub(crate) struct DUM {
     #[br(count=num_dummies)]
     pub dummies: Vec<Dummy>,
     #[br(assert(end_marker==0))]
-    end_marker: u32
+    end_marker: u32,
 }
 
 #[binread]
