@@ -319,7 +319,15 @@ fn main() -> Result<()> {
                     continue;
                 };
                 let data = serde_json::to_string(&data)?;
-                let data: Data = serde_json::from_str(&data)?;
+                let data: Data = match serde_json::from_str(&data) {
+                    Ok(data) => data,
+                    Err(err) => {
+                        eprintln!("{} JSON_ROUNDTRIP_FAIL: {}", entry.path, err);
+                        std::fs::write("roundtrip_error.json", &data)?;
+                        failed += 1;
+                        continue;
+                    }
+                };
                 let mut orig_bytes = Vec::new();
                 let mut orig_file = fs.open_file(&entry.path).unwrap();
                 orig_file.read_to_end(&mut orig_bytes).unwrap();
