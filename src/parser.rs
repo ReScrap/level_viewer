@@ -3,7 +3,7 @@ use std::{
     borrow::Borrow,
     collections::{BTreeMap, BTreeSet, HashMap},
     fmt::{Debug, Display},
-    io::{BufReader, Cursor, Read, Seek},
+    io::{BufReader, Cursor, Read, Seek, Write},
     ops::{Deref, Index},
     path::{Path, PathBuf},
 };
@@ -25,7 +25,7 @@ use walkdir::WalkDir;
 
 pub(crate) type IniData = IndexMap<String, IndexMap<String, Option<String>>>;
 
-#[binread]
+#[binrw]
 #[derive(Serialize, Debug, Clone)]
 pub(crate) struct PackedEntry {
     pub path: PascalString,
@@ -33,23 +33,30 @@ pub(crate) struct PackedEntry {
     pub offset: u32,
 }
 
-#[binread]
+#[binrw]
 #[br(magic = b"BFPK")]
 #[derive(Serialize, Debug)]
 pub(crate) struct PackedHeader {
     #[br(temp,assert(version==0))]
+    #[bw(calc = 0u32)]
     pub version: u32,
     #[br(temp)]
+    #[bw(try_calc = files.len().try_into())]
     pub num_files: u32,
     #[br(count=num_files)]
     pub files: Vec<PackedEntry>,
 }
 
-#[binread]
+#[binrw]
 #[derive(Serialize, Debug)]
-pub(crate) struct Table<const SIZE: u32, T: for<'a> BinRead<Args<'a> = ()> + 'static> {
+pub(crate) struct Table<
+    const SIZE: u32,
+    T: for<'a> BinRead<Args<'a> = ()> + for<'a> BinWrite<Args<'a> = ()> + 'static,
+> {
+    #[bw(try_calc = data.len().try_into())]
     num_entries: u32,
     #[br(assert(entry_size==SIZE))]
+    #[bw(calc = SIZE)]
     entry_size: u32,
     #[br(count=num_entries)]
     pub data: Vec<T>,
@@ -63,25 +70,29 @@ pub(crate) struct Table<const SIZE: u32, T: for<'a> BinRead<Args<'a> = ()> + 'st
 //     }
 // }
 
-#[binread]
+#[binrw]
+#[bw(import_raw(compute: bool))]
 #[derive(Clone)]
-pub(crate) struct Optional<T: for<'a> BinRead<Args<'a> = ()>> {
+pub(crate) struct Optional<T: for<'a> BinRead<Args<'a> = ()> + for<'a> BinWrite<Args<'a> = bool>> {
     #[br(temp)]
+    #[bw(calc = u32::from(value.is_some()))]
     has_value: u32,
     #[br(if(has_value!=0))]
+    #[bw(if(has_value!=0), args_raw = compute)]
     value: Option<T>,
 }
 
 impl<T> Optional<T>
 where
-    T: for<'a> BinRead<Args<'a> = ()>,
+    T: for<'a> BinRead<Args<'a> = ()> + for<'a> BinWrite<Args<'a> = bool>,
 {
     pub(crate) fn get(&self) -> Option<&T> {
         self.value.as_ref()
     }
 }
 
-impl<T: for<'a> BinRead<Args<'a> = ()> + Debug> Debug for Optional<T>
+impl<T: for<'a> BinRead<Args<'a> = ()> + for<'a> BinWrite<Args<'a> = bool> + Debug> Debug
+    for Optional<T>
 where
     T: Debug,
 {
@@ -90,7 +101,9 @@ where
     }
 }
 
-impl<T: for<'a> BinRead<Args<'a> = ()> + Serialize> Serialize for Optional<T> {
+impl<T: for<'a> BinRead<Args<'a> = ()> + for<'a> BinWrite<Args<'a> = bool> + Serialize> Serialize
+    for Optional<T>
+{
     fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
@@ -99,14 +112,24 @@ impl<T: for<'a> BinRead<Args<'a> = ()> + Serialize> Serialize for Optional<T> {
     }
 }
 
-#[binread]
+fn encode_pascal_string(string: &str) -> Vec<u8> {
+    let mut bytes = string.as_bytes().to_vec();
+    if !bytes.ends_with(&[0]) {
+        bytes.push(0);
+    }
+    bytes
+}
+
+#[binrw]
 #[derive(Clone)]
 pub(crate) struct PascalString {
     #[br(temp)]
+    #[bw(try_calc = encode_pascal_string(&string).len().try_into())]
     length: u32,
     #[br(count=length, map=|bytes: Vec<u8>| {
         String::from_utf8_lossy(&bytes.iter().copied().take_while(|&v| v!=0).collect::<Vec<u8>>()).into_owned()
     })]
+    #[bw(map = |value: &String| encode_pascal_string(value))]
     pub string: String,
 }
 
@@ -144,23 +167,27 @@ impl Debug for PascalString {
     }
 }
 
-#[binread]
+#[binrw]
 #[derive(Debug, Serialize)]
 pub(crate) struct IniSection {
     #[br(temp)]
+    #[bw(try_calc = sections.len().try_into())]
     num_lines: u32,
     #[br(count=num_lines)]
     pub sections: Vec<PascalString>,
 }
 
 /// Configuration data
-#[binread]
+#[binrw]
 #[br(magic = b"INI\0")]
+#[bw(import_raw(compute: bool))]
 #[derive(Debug)]
 pub(crate) struct INI {
     #[br(temp)]
+    #[bw(try_calc = compute_size(self, 8, compute)?.try_into())]
     size: u32,
     #[br(temp)]
+    #[bw(try_calc = sections.len().try_into())]
     num_sections: u32,
     #[br(count=num_sections)]
     pub sections: Vec<IniSection>,
@@ -215,7 +242,7 @@ impl Serialize for INI {
     }
 }
 
-#[binread]
+#[binrw]
 #[derive(Debug, Serialize, Clone)]
 pub(crate) struct RGBA {
     pub r: u8,
@@ -230,42 +257,44 @@ impl RGBA {
     }
 }
 
-#[binread]
+#[binrw]
 #[derive(Debug, Serialize, Clone)]
 #[br(import(n_dims: usize))]
+#[bw(import(n_dims: usize))]
 pub(crate) struct TexCoords(#[br(count=n_dims)] pub Vec<f32>);
 
-#[binread]
+#[binrw]
 #[derive(Debug, Serialize, Clone)]
 #[br(import(vert_fmt: FVF))]
+#[bw(import(vert_fmt: FVF))]
 // https://github.com/elishacloud/dxwrapper/blob/23ffb74c4c93c4c760bb5f1de347a0b039897210/ddraw/IDirect3DDeviceX.cpp#L2642
 pub(crate) struct Vertex {
     pub xyz: [f32; 3],
     // #[br(if(vert_fmt.pos()==Pos::XYZRHW))] // seems to be unused
     // rhw: Option<f32>,
-    #[br(if(vert_fmt.normal()))]
+    #[brw(if(vert_fmt.normal()))]
     pub normal: Option<[f32; 3]>,
-    #[br(if(vert_fmt.point_size()))]
+    #[brw(if(vert_fmt.point_size()))]
     pub point_size: Option<[f32; 3]>,
-    #[br(if(vert_fmt.diffuse()))]
+    #[brw(if(vert_fmt.diffuse()))]
     pub diffuse: Option<RGBA>,
-    #[br(if(vert_fmt.specular()))]
+    #[brw(if(vert_fmt.specular()))]
     pub specular: Option<RGBA>,
-    #[br(if(vert_fmt.tex_count().value()>=1), args (vert_fmt.tex_dims(0),))]
+    #[brw(if(vert_fmt.tex_count().value()>=1), args (vert_fmt.tex_dims(0),))]
     pub tex_0: Option<TexCoords>,
-    #[br(if(vert_fmt.tex_count().value()>=2), args (vert_fmt.tex_dims(1),))]
+    #[brw(if(vert_fmt.tex_count().value()>=2), args (vert_fmt.tex_dims(1),))]
     pub tex_1: Option<TexCoords>,
-    #[br(if(vert_fmt.tex_count().value()>=3), args (vert_fmt.tex_dims(2),))]
+    #[brw(if(vert_fmt.tex_count().value()>=3), args (vert_fmt.tex_dims(2),))]
     pub tex_2: Option<TexCoords>,
-    #[br(if(vert_fmt.tex_count().value()>=4), args (vert_fmt.tex_dims(3),))]
+    #[brw(if(vert_fmt.tex_count().value()>=4), args (vert_fmt.tex_dims(3),))]
     pub tex_3: Option<TexCoords>,
-    #[br(if(vert_fmt.tex_count().value()>=5), args (vert_fmt.tex_dims(4),))]
+    #[brw(if(vert_fmt.tex_count().value()>=5), args (vert_fmt.tex_dims(4),))]
     pub tex_4: Option<TexCoords>,
-    #[br(if(vert_fmt.tex_count().value()>=6), args (vert_fmt.tex_dims(5),))]
+    #[brw(if(vert_fmt.tex_count().value()>=6), args (vert_fmt.tex_dims(5),))]
     pub tex_5: Option<TexCoords>,
-    #[br(if(vert_fmt.tex_count().value()>=7), args (vert_fmt.tex_dims(6),))]
+    #[brw(if(vert_fmt.tex_count().value()>=7), args (vert_fmt.tex_dims(6),))]
     pub tex_6: Option<TexCoords>,
-    #[br(if(vert_fmt.tex_count().value()>=8), args (vert_fmt.tex_dims(7),))]
+    #[brw(if(vert_fmt.tex_count().value()>=8), args (vert_fmt.tex_dims(7),))]
     pub tex_7: Option<TexCoords>,
 }
 
@@ -359,38 +388,49 @@ fn vertex_format_from_id(fmt_id: u32, fmt: u32) -> Result<FVF> {
     FVF::try_from(fvf).map_err(|fvf| anyhow!("Invalid vertex format: {fvf:?}"))
 }
 
-#[binread]
+#[binrw]
 #[br(import(fmt_id: u32))]
+#[bw(import(fmt_id: u32))]
 #[derive(Debug, Serialize, Clone)]
 pub(crate) struct LFVFInner {
     #[br(try_map=|v:  u32| vertex_format_from_id(fmt_id,v))]
+    #[bw(map = |value: &FVF| u32::from(*value))]
     pub vert_fmt: FVF,
     #[br(assert(vertex_size_from_id(fmt_id).ok()==Some(vert_size)))]
+    #[bw(try_calc = vertex_size_from_id(fmt_id))]
     pub vert_size: u32,
     #[br(temp)]
+    #[bw(try_calc = data.len().try_into())]
     num_verts: u32,
     #[br(count=num_verts, args {inner: (vert_fmt,)})]
+    #[bw(args(self.vert_fmt))]
     pub data: Vec<Vertex>,
 }
 
-#[binread]
+#[binrw]
 #[br(magic = b"LFVF")]
+#[bw(import_raw(compute: bool))]
 #[derive(Debug, Serialize)]
 pub(crate) struct LFVF {
+    #[bw(try_calc = compute_size(self, 8, compute)?.try_into())]
     size: u32,
     #[br(assert(version==1,"invalid LFVF version"))]
+    #[bw(calc = 1u32)]
     version: u32,
     #[br(assert((0..=0x11).contains(&fmt_id),"invalid LFVF format_id"))]
     fmt_id: u32,
     #[br(if(fmt_id!=0),args(fmt_id))]
+    #[bw(if(*fmt_id!=0),args(*fmt_id))]
     pub inner: Option<LFVFInner>,
 }
 
 #[binrw]
 #[derive(Debug, Serialize)]
 pub(crate) struct MD3D_Tris {
+    #[bw(try_calc = tris.len().try_into())]
     num_tris: u32,
     #[br(assert(tri_size==6,"Invalid MD3D tri size"))]
+    #[bw(calc = 6u32)]
     tri_size: u32,
     #[br(count=num_tris)]
     pub tris: Vec<[u16; 3]>,
@@ -420,15 +460,19 @@ pub(crate) struct MD3D_Skin {
     pub weights: [f32; 3],
 }
 
-#[binread]
+#[binrw]
 #[br(magic = b"MD3D")]
+#[bw(import_raw(compute: bool))]
 #[derive(Debug, Serialize)]
 pub(crate) struct MD3D {
+    #[bw(try_calc = compute_size(self, 8, compute)?.try_into())]
     size: u32,
     #[br(assert(version==1,"Invalid MD3D version"))]
+    #[bw(calc = 1u32)]
     version: u32,
     pub name: PascalString,
     pub tris: MD3D_Tris,
+    #[bw(args_raw = compute)]
     pub verts: LFVF,
     pub vert_orig: Table<2, u16>,
     pub tri_seg_start: u32,
@@ -444,13 +488,18 @@ pub(crate) struct MD3D {
     pub feature_flag_0x50: u32,
     pub feature_flag_0x51: u32,
     #[br(count = 0x18)]
+    #[bw(assert(field_0x54_blob.len() == 0x18))]
     field_0x54_blob: Vec<u8>,
     #[br(count = 0x18)]
+    #[bw(assert(field_0x6c_blob.len() == 0x18))]
     field_0x6c_blob: Vec<u8>,
     #[br(count = 0xc)]
+    #[bw(assert(field_0x84_blob.len() == 0xc))]
     field_0x84_blob: Vec<u8>,
+    #[bw(calc = u32::from(child.is_some()))]
     has_child: u32,
     #[br(if(has_child!=0))]
+    #[bw(if(has_child!=0), args_raw = compute)]
     pub child: Option<Box<MD3D>>,
 }
 
@@ -480,12 +529,58 @@ pub(crate) enum NodeData {
     Portal(PORT),
 }
 
-#[binread]
+impl BinWrite for NodeData {
+    type Args<'a> = bool;
+
+    fn write_options<W: Write + Seek>(
+        &self,
+        writer: &mut W,
+        endian: binrw::Endian,
+        compute: Self::Args<'_>,
+    ) -> BinResult<()> {
+        match self {
+            NodeData::Dummy => 0x0u32.write_options(writer, endian, ())?,
+            NodeData::TriangleMesh => 0xa1_00_00_01_u32.write_options(writer, endian, ())?,
+            NodeData::D3DMesh(data) => {
+                0xa1_00_00_02_u32.write_options(writer, endian, ())?;
+                data.write_options(writer, endian, compute)?;
+            }
+            NodeData::Camera(data) => {
+                0xa2_00_00_04_u32.write_options(writer, endian, ())?;
+                data.write_options(writer, endian, compute)?;
+            }
+            NodeData::Light(data) => {
+                0xa3_00_00_08_u32.write_options(writer, endian, ())?;
+                data.write_options(writer, endian, compute)?;
+            }
+            NodeData::Ground(data) => {
+                0xa4_00_00_10_u32.write_options(writer, endian, ())?;
+                data.write_options(writer, endian, compute)?;
+            }
+            NodeData::SistPart => 0xa5_00_00_20_u32.write_options(writer, endian, ())?,
+            NodeData::Graphic3D(data) => {
+                0xa6_00_00_40_u32.write_options(writer, endian, ())?;
+                data.write_options(writer, endian, compute)?;
+            }
+            NodeData::Flare => 0xa6_00_00_80_u32.write_options(writer, endian, ())?,
+            NodeData::Portal(data) => {
+                0xa7_00_01_00u32.write_options(writer, endian, ())?;
+                data.write_options(writer, endian, compute)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+#[binrw]
 #[br(magic = b"SPR3")]
+#[bw(import_raw(compute: bool))]
 #[derive(Debug, Serialize)]
 pub(crate) struct SPR3 {
+    #[bw(try_calc = compute_size(self, 8, compute)?.try_into())]
     size: u32,
     #[br(assert(version==1,"Invalid SPR3 version"))]
+    #[bw(calc = 1u32)]
     version: u32,
     pos: [f32; 3],
     scale: [f32; 2],
@@ -494,12 +589,15 @@ pub(crate) struct SPR3 {
     diffuse_mod: RGBA,
 }
 
-#[binread]
+#[binrw]
 #[br(magic = b"SUEL")]
+#[bw(import_raw(compute: bool))]
 #[derive(Debug, Serialize)]
 pub(crate) struct SUEL {
+    #[bw(try_calc = compute_size(self, 8, compute)?.try_into())]
     size: u32,
     #[br(assert(version==1,"Invalid SUEL version"))]
+    #[bw(calc = 1u32)]
     version: u32,
     bbox: [[f32; 3]; 2],
     pos: [f32; 3],
@@ -509,12 +607,15 @@ pub(crate) struct SUEL {
     bbox_2: [[f32; 3]; 2],
 }
 
-#[binread]
+#[binrw]
 #[br(magic = b"CAM\0")]
+#[bw(import_raw(compute: bool))]
 #[derive(Debug, Serialize)]
 pub(crate) struct CAM {
+    #[bw(try_calc = compute_size(self, 8, compute)?.try_into())]
     size: u32,
     #[br(assert(version==1,"Invalid CAM version"))]
+    #[bw(calc = 1u32)]
     version: u32,
     angles: [f32; 3],
     origin: [f32; 3],
@@ -527,8 +628,8 @@ pub(crate) struct CAM {
     mode: u32,
 }
 
-#[binread]
-#[br(repr=u32)]
+#[binrw]
+#[brw(repr=u32)]
 #[repr(u32)]
 #[derive(Debug, Serialize)]
 pub(crate) enum LightType {
@@ -537,12 +638,15 @@ pub(crate) enum LightType {
     Directional = 5002,
 }
 
-#[binread]
+#[binrw]
 #[br(magic = b"LUZ\0")]
+#[bw(import_raw(compute: bool))]
 #[derive(Debug, Serialize)]
 pub(crate) struct LUZ {
+    #[bw(try_calc = compute_size(self, 8, compute)?.try_into())]
     size: u32,
     #[br(assert(version==1,"Invalid LUZ version"))]
+    #[bw(calc = 1u32)]
     version: u32,
     sector: u32,
     pub light_type: LightType,
@@ -557,15 +661,19 @@ pub(crate) struct LUZ {
     pub mult: f32,
     pub radcoeff: f32,
     #[br(map = |v: u32| v != 0)]
+    #[bw(map = |v: &bool| if *v { 1u32 } else { 0u32 })]
     pub active: bool,
 }
 
-#[binread]
+#[binrw]
 #[br(magic = b"PORT")]
+#[bw(import_raw(compute: bool))]
 #[derive(Debug, Serialize)]
 pub(crate) struct PORT {
+    #[bw(try_calc = compute_size(self, 8, compute)?.try_into())]
     size: u32,
     #[br(assert(version==1,"Invalid PORT version"))]
+    #[bw(calc = 1u32)]
     version: u32,
     width: u32,
     height: u32,
@@ -608,13 +716,21 @@ fn parse_node_flags(flags: u32) -> BTreeSet<NodeFlags> {
         .collect()
 }
 
-#[binread]
+fn encode_node_flags(flags: &BTreeSet<NodeFlags>) -> u32 {
+    flags
+        .iter()
+        .fold(0u32, |acc, flag| acc | (1 << flag.to_u8().unwrap_or(0xff)))
+}
+
+#[binrw]
+#[bw(import_raw(compute: bool))]
 #[derive(Debug, Serialize)]
 pub(crate) struct Node {
     pub object_index: i32,
     pub table_index: i32,
     pub node_xref: i32,
     #[br(map=parse_node_flags)]
+    #[bw(map=encode_node_flags)]
     pub flags: BTreeSet<NodeFlags>,
     pub ani_mask: i32,
     pub name: PascalString,
@@ -626,14 +742,18 @@ pub(crate) struct Node {
     pub transform_local: [[f32; 4]; 4], // 0x40 4x4 Matrix
     pub rest_rot: [f32; 4],
     pub axis_scale: [f32; 3],
+    #[bw(args_raw = compute)]
     pub info: Optional<INI>,
+    #[bw(args_raw = compute)]
     pub content: Optional<NodeData>,
 }
 
-#[binread]
+#[binrw]
 #[br(magic = b"MAP\0")]
+#[bw(import_raw(compute: bool))]
 #[derive(Debug, Serialize, Clone)]
 pub(crate) struct MAP {
+    #[bw(try_calc = compute_size(self, 8, compute)?.try_into())]
     size: u32,
     #[br(assert((2..=3).contains(&version),"invalid MAP version"))]
     version: u32,
@@ -649,13 +769,15 @@ pub(crate) struct MAP {
     pub scale: [f32; 2],
     pub quantity: f32, // Bumpmap scaling
     #[br(if(version==3))]
+    #[bw(if(*version==3))]
     pub uv_matrix: Option<[f32; 2]>,
     #[br(if(version==3))]
+    #[bw(if(*version==3))]
     pub angle: Option<f32>,
 }
 
-#[binread]
-#[br(repr=u32)]
+#[binrw]
+#[brw(repr=u32)]
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Sequence, Serialize, ToPrimitive)]
 
@@ -675,8 +797,8 @@ pub(crate) enum BlendMode {
     BothInvSrcAlpha = 13,
 }
 
-#[binread]
-#[br(repr=u32)]
+#[binrw]
+#[brw(repr=u32)]
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Sequence, Serialize, ToPrimitive)]
 pub(crate) enum CmpFunc {
@@ -718,7 +840,13 @@ fn parse_mat_prop_flags(flags: u16) -> BTreeSet<MatPropAttrib> {
         .collect()
 }
 
-#[binread]
+fn encode_mat_prop_flags(flags: &BTreeSet<MatPropAttrib>) -> u16 {
+    flags
+        .iter()
+        .fold(0u16, |acc, flag| acc | (1 << flag.to_u8().unwrap_or(0xff)))
+}
+
+#[binrw]
 #[derive(Debug, Serialize, Clone)]
 pub(crate) struct MatProps {
     #[br(assert(sub_material==0))]
@@ -730,20 +858,24 @@ pub(crate) struct MatProps {
     pub dif_alpha: u8,
     pub env_map: u8,
     #[br(map=parse_mat_prop_flags)]
+    #[bw(map=encode_mat_prop_flags)]
     pub attrib: BTreeSet<MatPropAttrib>,
     pub enable_fog: u8,
     pub z_write: u8,
     pub zfunc: CmpFunc,
 }
 
-#[binread]
+#[binrw]
 #[br(magic = b"MAT\0")]
+#[bw(import_raw(compute: bool))]
 #[derive(Debug, Serialize, Clone)]
 pub(crate) struct MAT {
+    #[bw(try_calc = compute_size(self, 8, compute)?.try_into())]
     size: u32,
     #[br(assert((1..=3).contains(&version),"invalid MAT version"))]
     version: u32,
     #[br(if(version>1))]
+    #[bw(if(*version>1))]
     pub name: Option<PascalString>,
     pub ambient_override: RGBA,
     pub diffuse_mod: RGBA,
@@ -753,43 +885,55 @@ pub(crate) struct MAT {
     pub spec_power: f32,
     pub spec_mult: f32,
     pub mat_props: MatProps,
+    #[bw(args_raw = compute)]
     pub maps: [Optional<MAP>; 5], // diffuse, metallic, env, bump, glow
 }
 
-#[binread]
+#[binrw]
 #[derive(Debug, Serialize)]
 pub(crate) struct LightColor {
     pub color: RGBA,
     pub intensity: f32,
 }
 
-#[binread]
+#[binrw]
 #[br(magic = b"SCN\0")]
+#[bw(import_raw(compute: bool))]
 #[derive(Debug, Serialize)]
 pub(crate) struct SCN {
     // 0x650220
+    #[bw(try_calc = compute_size(self, 8, compute)?.try_into())]
     size: u32,
     #[br(temp,assert(version==1))]
+    #[bw(calc = 1u32)]
     version: u32,
     pub model_name: PascalString,
     pub root_node: PascalString,
+    #[bw(args_raw = compute)]
     pub node_props: Optional<INI>,
     pub ambient: LightColor,
     pub background: LightColor,
     pub bbox: [[f32; 3]; 2],
     // #[br(assert(collide_mesh_ref==0))]
     collide_mesh_ref: u32,
+    #[bw(args_raw = compute)]
     pub user_props: Optional<INI>,
     #[br(temp)]
+    #[bw(try_calc = mat.len().try_into())]
     num_materials: u32,
     #[br(count=num_materials)]
+    #[bw(args_raw = compute)]
     pub mat: Vec<MAT>,
     #[br(temp,assert(nodes_section_marker==1))]
+    #[bw(calc = 1u32)]
     nodes_section_marker: u32,
     #[br(temp)]
+    #[bw(try_calc = nodes.len().try_into())]
     num_nodes: u32,
     #[br(count = num_nodes)] // 32
+    #[bw(args_raw = compute)]
     pub nodes: Vec<Node>,
+    #[bw(args_raw = compute)]
     pub ani: Optional<ANI>,
 }
 
@@ -800,24 +944,31 @@ fn convert_timestamp(dt: u32) -> Result<DateTime<Utc>> {
     Ok(dt)
 }
 
-#[binread]
+#[binrw]
+#[bw(import_raw(compute: bool))]
 #[derive(Debug, Serialize)]
 struct VertexAnim {
+    #[bw(try_calc = tris.len().try_into())]
     n_tr: u32,
     fps: f32,
     #[br(count=n_tr)]
     tris: Vec<[u8; 3]>,
 }
 
-#[binread]
+#[binrw]
 #[br(magic = b"EVA\0")]
+#[bw(import_raw(compute: bool))]
 #[derive(Debug, Serialize)]
 pub(crate) struct EVA {
+    #[bw(try_calc = compute_size(self, 8, compute)?.try_into())]
     size: u32,
     #[br(assert(version==1,"Invalid EVA version"))]
+    #[bw(calc = 1u32)]
     version: u32,
+    #[bw(try_calc = verts.len().try_into())]
     num_verts: u32,
     #[br(count=num_verts)]
+    #[bw(args_raw = compute)]
     verts: Vec<Optional<VertexAnim>>,
 }
 
@@ -858,6 +1009,17 @@ fn parse_ani_track_type(flags: u32) -> Result<BTreeSet<AniTrackType>> {
     Ok(enum_iterator::all::<AniTrackType>()
         .filter(|flag| (flags & (1 << flag.to_u8().unwrap_or(0xff))) != 0)
         .collect())
+}
+
+fn encode_ani_track_type(flags: &BTreeSet<AniTrackType>) -> u32 {
+    flags.iter().fold(0u32, |acc, flag| acc | flag.mask())
+}
+
+fn encode_track_map(track_map: &[Option<u8>]) -> Vec<u8> {
+    track_map
+        .iter()
+        .map(|value| value.map_or(0, |v| v.saturating_add(1)))
+        .collect()
 }
 
 #[derive(Debug, Serialize)]
@@ -941,7 +1103,59 @@ fn parse_ani_blocks(
     Ok(blocks)
 }
 
-#[binread]
+#[binrw::writer(writer, endian)]
+fn write_ani_blocks(tracks: &Vec<BlockInfo>) -> BinResult<()> {
+    for block in tracks {
+        if block.optimized && block.stream {
+            let pos = writer.stream_position()?;
+            let size: u32 = block
+                .size
+                .try_into()
+                .map_err(|_| binrw::Error::AssertFail {
+                    pos,
+                    message: "ANI block size does not fit in u32".into(),
+                })?;
+            size.write_options(writer, endian, ())?;
+        }
+    }
+    Ok(())
+}
+
+#[binrw::writer(writer, endian)]
+fn write_nabk_data(data: &Vec<u8>, _compute: bool) -> BinResult<()> {
+    <[u8; 4]>::write_options(&b"NABK", writer, endian, ())?;
+    let pos = writer.stream_position()?;
+    let size: u32 = data
+        .len()
+        .try_into()
+        .map_err(|_| binrw::Error::AssertFail {
+            pos,
+            message: "NABK data too large".into(),
+        })?;
+    size.write_options(writer, endian, ())?;
+    data.write_options(writer, endian, ())?;
+    Ok(())
+}
+
+#[binrw::writer(writer, endian)]
+fn write_materials(materials: &Vec<(u32, MAT)>, compute: bool) -> BinResult<()> {
+    for (key, mat) in materials {
+        key.write_options(writer, endian, ())?;
+        mat.write_options(writer, endian, compute)?;
+    }
+    Ok(())
+}
+
+#[binrw::writer(writer, endian)]
+fn write_emi_textures(maps: &Vec<EMI_Textures>) -> BinResult<()> {
+    for map in maps {
+        map.write_options(writer, endian, ())?;
+    }
+    EMI_Textures { key: 0, data: None }.write_options(writer, endian, ())?;
+    Ok(())
+}
+
+#[binrw]
 #[derive(Debug)]
 struct AniStreamHeader {
     size: u16,
@@ -949,55 +1163,72 @@ struct AniStreamHeader {
     num_frames: u16,
 }
 
-#[binread]
+#[binrw]
 #[br(magic = b"NAM\0")]
+#[bw(import_raw(compute: bool))]
 #[derive(Debug, Serialize)]
 pub(crate) struct NAM {
+    #[bw(try_calc = compute_size(self, 8, compute)?.try_into())]
     size: u32,
     #[br(assert(version==1))]
+    #[bw(calc = 1u32)]
     version: u32,
     pub start_frame: u32,
     pub frames: u32,
     #[br(try_map(|v: u32| parse_ani_track_type(v)))]
+    #[bw(map = encode_ani_track_type)]
     pub cm3_flags: BTreeSet<AniTrackType>,
     #[br(assert(opt_flags & 0xfff8 == 0x8000u32))]
     #[br(map(|v: u32| v|0x8000u32))]
+    #[bw(map = |v: &u32| *v | 0x8000u32)]
     pub opt_flags: u32,
     #[br(assert(stm_flags & 0xfff8 == 0))]
     pub stm_flags: u32,
     #[br(parse_with = parse_ani_blocks, args(frames,&cm3_flags,opt_flags,stm_flags))]
+    #[bw(write_with = write_ani_blocks)]
     pub tracks: Vec<BlockInfo>,
     #[br(if(cm3_flags.contains(&AniTrackType::EVA)))]
+    #[bw(if(self.cm3_flags.contains(&AniTrackType::EVA)), args_raw = compute)]
     pub eva: Option<EVA>,
 }
 
-#[binread]
+#[binrw]
 #[br(magic = b"NABK")]
+#[bw(import_raw(compute: bool))]
 #[derive(Debug, Serialize)]
 pub(crate) struct NABK {
+    #[bw(try_calc = compute_size(self, 8, compute)?.try_into())]
     size: u32,
     #[br(count=size)]
     pub data: Vec<u8>,
 }
 
-#[binread]
+#[binrw]
 #[br(magic = b"ANI\0")]
+#[bw(import_raw(compute: bool))]
 #[derive(Debug, Serialize)]
 pub(crate) struct ANI {
+    #[bw(try_calc = compute_size(self, 8, compute)?.try_into())]
     size: u32,
     #[br(assert(version==2, "Invalid ANI version"))]
+    #[bw(calc = 2u32)]
     version: u32,
     pub fps: f32,
     pub first_frame: u32,
     pub last_frame: u32,
+    #[bw(try_calc = tracks.len().try_into())]
     pub num_objects: u32,
     active_flag: u32,
+    #[bw(try_calc = track_map.len().try_into())]
     num_nodes: u32,
     #[br(count=num_nodes, map=|data: Vec<u8>| data.iter().map(|&v| (v!=0).then_some(v-1)).collect())]
+    #[bw(map = |value: &Vec<Option<u8>>| encode_track_map(value))]
     pub track_map: Vec<Option<u8>>,
     #[br(map=|v: NABK| v.data)]
+    #[bw(write_with = write_nabk_data, args(compute))]
     pub data: Vec<u8>,
     #[br(count = num_objects)]
+    #[bw(args_raw = compute)]
     pub tracks: Vec<NAM>,
 }
 
@@ -1058,16 +1289,22 @@ impl ANI {
     }
 }
 
-#[binread]
+#[binrw]
+#[bw(import_raw(compute: bool))]
 #[derive(Debug, Serialize)]
 pub(crate) struct SM3 {
+    #[bw(try_calc = compute_size(self, 8, compute)?.try_into())]
     size: u32,
     #[br(temp,assert(const_1==0x6515f8,"Invalid timestamp"))]
+    #[bw(calc = 0x6515f8u32)]
     const_1: u32,
     #[br(try_map=convert_timestamp)]
+    #[bw(map = |value: &DateTime<Utc>| value.timestamp() as u32)]
     time_1: DateTime<Utc>,
     #[br(try_map=convert_timestamp)]
+    #[bw(map = |value: &DateTime<Utc>| value.timestamp() as u32)]
     time_2: DateTime<Utc>,
+    #[bw(args_raw = compute)]
     pub scene: SCN,
 }
 
@@ -1083,16 +1320,22 @@ impl SM3 {
     }
 }
 
-#[binread]
+#[binrw]
+#[bw(import_raw(compute: bool))]
 #[derive(Debug, Serialize)]
 pub(crate) struct CM3 {
+    #[bw(try_calc = compute_size(self, 8, compute)?.try_into())]
     size: u32,
     #[br(temp,assert(const_1==0x6515f8,"Invalid timestamp"))]
+    #[bw(calc = 0x6515f8u32)]
     const_1: u32,
     #[br(try_map=convert_timestamp)]
+    #[bw(map = |value: &DateTime<Utc>| value.timestamp() as u32)]
     time_1: DateTime<Utc>,
     #[br(try_map=convert_timestamp)]
+    #[bw(map = |value: &DateTime<Utc>| value.timestamp() as u32)]
     time_2: DateTime<Utc>,
+    #[bw(args_raw = compute)]
     pub scene: SCN,
 }
 
@@ -1108,43 +1351,55 @@ impl CM3 {
     }
 }
 
-#[binread]
+#[binrw]
+#[bw(import_raw(compute: bool))]
 #[derive(Debug, Serialize)]
 pub(crate) struct Dummy {
     has_next: u32,
     pub name: PascalString,
     pub pos: [f32; 3],
     pub rot: [f32; 3],
+    #[bw(args_raw = compute)]
     pub info: Optional<INI>,
 }
 
-#[binread]
+#[binrw]
+#[bw(import_raw(compute: bool))]
 #[derive(Debug, Serialize)]
 pub(crate) struct DUM {
+    #[bw(try_calc = compute_size(self, 8, compute)?.try_into())]
     size: u32,
     #[br(assert(version==1, "Invalid DUM version"))]
+    #[bw(calc = 1u32)]
     version: u32,
+    #[bw(try_calc = dummies.len().try_into())]
     num_dummies: u32,
     #[br(count=num_dummies)]
+    #[bw(args_raw = compute)]
     pub dummies: Vec<Dummy>,
     #[br(assert(end_marker==0))]
+    #[bw(calc = 0u32)]
     end_marker: u32,
 }
 
-#[binread]
+#[binrw]
 #[br(magic = b"QUAD")]
+#[bw(import_raw(compute: bool))]
 #[derive(Debug, Serialize)]
 pub(crate) struct QUAD {
+    #[bw(try_calc = compute_size(self, 8, compute)?.try_into())]
     size: u32,
     #[br(assert(version==1, "Invalid QUAD version"))]
+    #[bw(calc = 1u32)]
     version: u32,
     mesh: u32,
     table: Table<2, u16>,
     f_4: [f32; 4],
+    #[bw(args_raw = compute)]
     pub child: Optional<Box<QUAD>>,
 }
 
-#[binread]
+#[binrw]
 #[derive(Debug, Serialize)]
 pub(crate) struct CMSH_Tri {
     t: u32,
@@ -1154,14 +1409,18 @@ pub(crate) struct CMSH_Tri {
     flags: u16,
 }
 
-#[binread]
+#[binrw]
 #[br(magic = b"CMSH")]
+#[bw(import_raw(compute: bool))]
 #[derive(Debug, Serialize)]
 pub(crate) struct CMSH {
+    #[bw(try_calc = compute_size(self, 8, compute)?.try_into())]
     size: u32,
     #[br(assert(version==2, "Invalid CMSH version"))]
+    #[bw(calc = 2u32)]
     version: u32,
     #[br(assert(collide_mesh_size==0x34, "Invalid collision mesh size"))]
+    #[bw(calc = 0x34u32)]
     collide_mesh_size: u32,
     pub zone_name: PascalString,
     mesh_flags: u16,
@@ -1174,20 +1433,24 @@ pub(crate) struct CMSH {
     pub tris: Table<0x1c, CMSH_Tri>,
 }
 
-#[binread]
+#[binrw]
 #[br(magic = b"AMC\0")]
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Default)]
 struct EmptyAMC {
     #[br(assert(size==0))]
+    #[bw(calc = 0u32)]
     size: u32,
 }
 
 // TODO: OG game uses version_code==1
-#[binread]
+#[binrw]
+#[bw(import_raw(compute: bool))]
 #[derive(Debug, Serialize)]
 pub(crate) struct AMC {
+    #[bw(try_calc = compute_size(self, 8, compute)?.try_into())]
     size: u32,
     #[br(assert(version==100,"Invalid AMC version"))]
+    #[bw(calc = 100u32)]
     version: u32,
     #[br(assert(version_code==0, "Invalid AMC version_code: {}", version_code))]
     version_code: u32,
@@ -1195,70 +1458,93 @@ pub(crate) struct AMC {
     num_tris: u32,
     bbox_2: [[f32; 3]; 2],
     unk: [f32; 3],
+    #[bw(args_raw = compute)]
     pub cmsh: [CMSH; 2],
+    #[bw(try_calc = sector_col.len().try_into())]
     num_sectors: u32,
     #[br(count=num_sectors)]
+    #[bw(args_raw = compute)]
     pub sector_col: Vec<[CMSH; 2]>,
     grid_size: [u32; 2],
     grid_scale: [f32; 2],
     grid_scale_inv: [f32; 2],
     #[br(temp)]
+    #[bw(try_calc = quads.len().try_into())]
     num_quads: u32,
     #[br(count=num_quads)]
+    #[bw(args_raw = compute)]
     pub quads: Vec<QUAD>,
+    #[bw(args_raw = compute)]
     final_quad: Optional<QUAD>,
     #[br(temp)]
+    #[bw(calc = EmptyAMC::default())]
     _empty_amc: EmptyAMC,
 }
 
-#[binread]
+#[binrw]
 #[br(import(version: u32))]
+#[bw(import_raw(compute: bool))]
 #[derive(Debug, Serialize)]
 pub(crate) struct TriV104 {
     #[br(if(version>=0x69))]
+    #[bw(if(sector_name.is_some()))]
     pub sector_name: Option<PascalString>,
     pub mat_key: u32,
     pub map_key: u32,
+    #[bw(try_calc = tris.len().try_into())]
     num_tris: u32,
     #[br(count=num_tris)]
     pub tris: Vec<[u16; 3]>,
+    #[bw(args_raw = compute)]
     pub verts_1: LFVF,
+    #[bw(args_raw = compute)]
     pub verts_2: LFVF,
 }
 
-#[binread]
+#[binrw]
 #[br(magic = b"TRI\0", import(version: u32))]
+#[bw(import_raw(compute: bool))]
 #[derive(Debug, Serialize)]
 pub(crate) struct TRI {
+    #[bw(try_calc = compute_size(self, 8, compute)?.try_into())]
     size: u32,
     pub flags: u32,
     pub name: PascalString,
     pub sector_num: u32, // if 0xffffffff sometimes TriV104 has no name_2 field
     #[br(args(version))]
+    #[bw(args_raw = compute)]
     pub data: TriV104,
 }
 
-#[binread]
+#[binrw]
 #[derive(Debug, Serialize)]
 pub(crate) struct EMI_Textures {
     pub key: u32,
     #[br(if(key!=0))]
+    #[bw(if(*key!=0))]
     pub data: Option<(PascalString, u32, PascalString)>,
 }
 
-#[binread]
+#[binrw]
+#[bw(import_raw(compute: bool))]
 #[derive(Debug, Serialize)]
 pub(crate) struct EMI {
+    #[bw(try_calc = compute_size(self, 8, compute)?.try_into())]
     size: u32,
     #[br(assert((103..=105).contains(&version)))]
     pub version: u32,
+    #[bw(try_calc = materials.len().try_into())]
     pub num_materials: u32,
     #[br(count=num_materials)]
+    #[bw(write_with = write_materials, args(compute))]
     pub materials: Vec<(u32, MAT)>,
     #[br(parse_with = until_exclusive(|v: &EMI_Textures| v.key==0))]
+    #[bw(write_with = write_emi_textures)]
     pub maps: Vec<EMI_Textures>,
+    #[bw(try_calc = tri.len().try_into())]
     pub num_objs: u32,
     #[br(count=num_objs,args{inner: (version,)})]
+    #[bw(args_raw = compute)]
     pub tri: Vec<TRI>,
 }
 
