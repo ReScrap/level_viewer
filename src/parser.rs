@@ -45,13 +45,13 @@ pub(crate) struct PackedHeader {
 #[binread]
 #[derive(Serialize, Debug)]
 #[br(import(msg: &'static str))]
-struct Unparsed<const SIZE: u64> {
+pub(crate) struct Unparsed<const SIZE: u64> {
     #[br(count=SIZE, try_map=|data: Vec<u8>| Err(anyhow!("Unparsed data: {}\n{}", msg, rhexdumps!(data))))]
     data: (),
 }
 #[binread]
 #[derive(Serialize, Debug)]
-struct RawTable<const SIZE: u32> {
+pub(crate) struct RawTable<const SIZE: u32> {
     num_entries: u32,
     #[br(assert(entry_size==SIZE))]
     entry_size: u32,
@@ -61,7 +61,7 @@ struct RawTable<const SIZE: u32> {
 
 #[binread]
 #[derive(Serialize, Debug)]
-struct Table<T: for<'a> BinRead<Args<'a> = ()> + 'static> {
+pub(crate) struct Table<T: for<'a> BinRead<Args<'a> = ()> + 'static> {
     num_entries: u32,
     entry_size: u32,
     #[br(count=num_entries)]
@@ -123,7 +123,7 @@ impl<T: for<'a> BinRead<Args<'a> = ()> + Serialize> Serialize for Optional<T> {
 
 #[binread]
 #[derive(Serialize, Debug)]
-struct Chunk {
+pub(crate) struct Chunk {
     #[br(map=|c:[u8;4]| c.into_iter().map(|v| v as char).collect())]
     magic: Vec<char>,
     size: u32,
@@ -159,23 +159,23 @@ impl Debug for PascalString {
 
 #[binread]
 #[derive(Debug, Serialize)]
-struct IniSection {
+pub(crate) struct IniSection {
     #[br(temp)]
     num_lines: u32,
     #[br(count=num_lines)]
-    sections: Vec<PascalString>,
+    pub sections: Vec<PascalString>,
 }
 
 #[binread]
 #[br(magic = b"INI\0")]
 #[derive(Debug)]
-struct INI {
+pub(crate) struct INI {
     #[br(temp)]
     _size: u32,
     #[br(temp)]
     num_sections: u32,
     #[br(count=num_sections)]
-    sections: Vec<IniSection>,
+    pub sections: Vec<IniSection>,
 }
 
 impl Serialize for INI {
@@ -261,13 +261,13 @@ pub(crate) enum Pos {
 #[derive(DebugBits, Serialize, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, TryFromBits)]
 pub(crate) struct FVF {
     reserved: bool,
-    pos: Pos,
-    normal: bool,
-    point_size: bool,
-    diffuse: bool,
-    specular: bool,
-    tex_count: u4,
-    tex: [u2; 8],
+    pub pos: Pos,
+    pub normal: bool,
+    pub point_size: bool,
+    pub diffuse: bool,
+    pub specular: bool,
+    pub tex_count: u4,
+    pub tex: [u2; 8],
     rest: u4,
 }
 
@@ -363,24 +363,24 @@ pub(crate) struct LFVF {
 
 #[binread]
 #[derive(Debug, Serialize)]
-struct MD3D_Tris {
+pub(crate) struct MD3D_Tris {
     num_tris: u32,
     #[br(assert(tri_size==6,"Invalid MD3D tri size"))]
     tri_size: u32,
     #[br(count=num_tris)]
-    tris: Vec<[u16; 3]>,
+    pub tris: Vec<[u16; 3]>,
 }
 
 #[binread]
 #[br(magic = b"MD3D")]
 #[derive(Debug, Serialize)]
-struct MD3D {
+pub(crate) struct MD3D {
     size: u32,
     #[br(assert(version==1,"Invalid MD3D version"))]
     version: u32,
-    name: PascalString,
-    tris: MD3D_Tris,
-    verts: LFVF,
+    pub name: PascalString,
+    pub tris: MD3D_Tris,
+    pub verts: LFVF,
     unk_table_1: RawTable<2>, // Vert orig
     unk_int_1: u32,
     unk_table_2: RawTable<0x10>,
@@ -401,13 +401,13 @@ struct MD3D {
     unk_bytes_3: Vec<u8>,
     has_child: u32,
     #[br(if(has_child!=0))]
-    child: Option<Box<MD3D>>,
+    pub child: Option<Box<MD3D>>,
 }
 
 #[binread]
 #[derive(Debug, Serialize)]
 #[serde(tag = "type")]
-enum NodeData {
+pub(crate) enum NodeData {
     #[br(magic = 0x0u32)]
     Dummy,
     #[br(magic = 0xa1_00_00_01_u32)]
@@ -433,7 +433,7 @@ enum NodeData {
 #[binread]
 #[br(magic = b"SPR3")]
 #[derive(Debug, Serialize)]
-struct SPR3 {
+pub(crate) struct SPR3 {
     size: u32,
     #[br(assert(version==1,"Invalid SPR3 version"))]
     version: u32,
@@ -447,7 +447,7 @@ struct SPR3 {
 #[binread]
 #[br(magic = b"SUEL")]
 #[derive(Debug, Serialize)]
-struct SUEL {
+pub(crate) struct SUEL {
     size: u32,
     #[br(assert(version==1,"Invalid SUEL version"))]
     version: u32,
@@ -462,13 +462,13 @@ struct SUEL {
 #[binread]
 #[br(magic = b"CAM\0")]
 #[derive(Debug, Serialize)]
-struct CAM {
+pub(crate) struct CAM {
     size: u32,
     #[br(assert(version==1,"Invalid CAM version"))]
     version: u32,
     unk_1: [f32; 3],
     origin: [f32; 3],
-    destination: [f32; 3],
+    target: [f32; 3],
     unk_4: [u8; 4],
     unk_5: [u8; 4],
     unk_6: [u8; 4],
@@ -481,7 +481,7 @@ struct CAM {
 
 #[binread]
 #[derive(Debug, Serialize)]
-enum LightType {
+pub(crate) enum LightType {
     #[br(magic = 5000u32)]
     Point,
     #[br(magic = 5001u32)]
@@ -493,7 +493,7 @@ enum LightType {
 #[binread]
 #[br(magic = b"LUZ\0")]
 #[derive(Debug, Serialize)]
-struct LUZ {
+pub(crate) struct LUZ {
     size: u32,
     #[br(assert(version==1,"Invalid LUZ version"))]
     version: u32,
@@ -516,7 +516,7 @@ struct LUZ {
 #[binread]
 #[br(magic = b"PORT")]
 #[derive(Debug, Serialize)]
-struct PORT {
+pub(crate) struct PORT {
     size: u32,
     #[br(assert(version==1,"Invalid PORT version"))]
     version: u32,
@@ -527,7 +527,7 @@ struct PORT {
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Sequence, Serialize, ToPrimitive)]
 #[repr(u8)]
-enum NodeFlags {
+pub enum NodeFlags {
     ROOT,
     GROUP,
     SELECT,
@@ -562,24 +562,24 @@ fn parse_node_flags(flags: u32) -> BTreeSet<NodeFlags> {
 
 #[binread]
 #[derive(Debug, Serialize)]
-struct Node {
+pub(crate) struct Node {
     node_index: i32,
     unk_idx_1: i32,
     unk_idx_2: i32,
     #[br(map=parse_node_flags)]
-    flags: BTreeSet<NodeFlags>,
+    pub flags: BTreeSet<NodeFlags>,
     unk_f20_0x50: i32,
-    name: PascalString,
+    pub name: PascalString,
     parent: PascalString,
-    pos_offset: [f32; 3],
+    pub pos_offset: [f32; 3],
     rot: [f32; 4],
-    scale: f32,
-    transform: [[f32; 4]; 4],     // 0x40 4x4 Matrix
+    pub scale: f32,
+    pub transform: [[f32; 4]; 4], // 0x40 4x4 Matrix
     transform_inv: [[f32; 4]; 4], // 0x40 4x4 Matrix
     unk_rot: [f32; 4],
     axis_scale: [f32; 3],
-    info: Optional<INI>,
-    content: Optional<NodeData>,
+    pub info: Optional<INI>,
+    pub content: Optional<NodeData>,
 }
 
 #[binread]
@@ -624,7 +624,7 @@ pub(crate) struct MAT {
 #[binread]
 #[br(magic = b"SCN\0")]
 #[derive(Debug, Serialize)]
-struct SCN {
+pub(crate) struct SCN {
     // 0x650220
     size: u32,
     #[br(temp,assert(version==1))]
@@ -653,7 +653,7 @@ struct SCN {
     #[br(temp)]
     num_nodes: u32,
     #[br(count = num_nodes)] // 32
-    nodes: Vec<Node>,
+    pub nodes: Vec<Node>,
     ani: Optional<ANI>, // TODO: ?
 }
 
@@ -750,7 +750,7 @@ struct ANI {
 #[binread]
 #[br(magic = b"SM3\0")]
 #[derive(Debug, Serialize)]
-struct SM3 {
+pub(crate) struct SM3 {
     size: u32,
     #[br(temp,assert(const_1==0x6515f8,"Invalid timestamp"))]
     const_1: u32,
@@ -758,7 +758,7 @@ struct SM3 {
     time_1: DateTime<Utc>,
     #[br(try_map=convert_timestamp)]
     time_2: DateTime<Utc>,
-    scene: SCN,
+    pub scene: SCN,
 }
 
 impl SM3 {
