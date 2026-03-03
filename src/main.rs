@@ -2720,6 +2720,8 @@ impl DroneCam {
         let (mut tran, mut drone, mut blur, input_state) = query.single_mut()?;
         let mut throttle = input_state.clamped_value(&DroneAction::Throttle);
         throttle = throttle.powf(2.0).copysign(throttle);
+        let mut reverse = input_state.button_value(&DroneAction::Reverse);
+        reverse = reverse.powf(2.0).copysign(reverse);
         let mut strafe = input_state.clamped_value(&DroneAction::Strafe);
         strafe = strafe.powf(2.0).copysign(strafe);
         let mut yaw = input_state.clamped_value(&DroneAction::Yaw);
@@ -2755,17 +2757,27 @@ impl DroneCam {
             let ang_drag = drone.ang_vel * dt * (global_drag + brake * 5.0) * ang_drag_mult;
             drone.ang_vel -= ang_drag;
 
-            // Keep keyboard/mouse camera level: preserve yaw/pitch but relax roll to horizon.
-            let (yaw, pitch, roll) = tran.rotation.to_euler(EulerRot::YXZ);
+            // Keep keyboard/mouse camera level without Euler decomposition.
             let level_lerp = 1.0 - (-8.0 * dt).exp();
-            let leveled_roll = roll.lerp(0.0, level_lerp);
-            tran.rotation = Quat::from_euler(EulerRot::YXZ, yaw, pitch, leveled_roll);
+            let forward = *tran.forward();
+            let level_up = Vec3::Y - forward * Vec3::Y.dot(forward);
+            if level_up.length_squared() > f32::EPSILON {
+                let current_up = *tran.up();
+                let target_up = level_up.normalize();
+                let mut roll_error = current_up.angle_between(target_up);
+                let sign = forward.dot(current_up.cross(target_up)).signum();
+                roll_error *= sign;
+                let correction = Quat::from_axis_angle(forward, roll_error * level_lerp);
+                tran.rotation = correction * tran.rotation;
+            }
             drone.ang_vel.z = drone.ang_vel.z.lerp(0.0, level_lerp);
         }
 
         {
             // Translation
-            let acc = (tran.forward() * throttle + tran.right() * strafe) * state.thrust_power * dt;
+            let acc = (tran.forward() * (throttle - reverse) + tran.right() * strafe)
+                * state.thrust_power
+                * dt;
             drone.velocity += acc;
             let mv_dir = Dir3::new(drone.velocity);
             if mv_dir.is_ok() && state.cam_physics {
@@ -2861,6 +2873,8 @@ struct CameraBundle {
 enum DroneAction {
     #[actionlike(Axis)]
     Throttle,
+    #[actionlike(Button)]
+    Reverse,
     #[actionlike(Axis)]
     Strafe,
     #[actionlike(Axis)]
@@ -2889,7 +2903,8 @@ impl CameraBundle {
         Self {
             camera: Camera3d::default(),
             inputs: InputMap::default()
-                .with_axis(DroneAction::Throttle, VirtualAxis::ws())
+                .with(DroneAction::Throttle, KeyCode::KeyW)
+                .with(DroneAction::Reverse, KeyCode::KeyS)
                 .with_axis(DroneAction::Strafe, VirtualAxis::ad())
                 .with_axis(
                     DroneAction::Throttle,
