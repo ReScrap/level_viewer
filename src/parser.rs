@@ -91,6 +91,15 @@ where
     }
 }
 
+impl<T> Default for Optional<T>
+where
+    T: for<'a> BinRead<Args<'a> = ()> + for<'a> BinWrite<Args<'a> = bool>,
+{
+    fn default() -> Self {
+        Self { value: None }
+    }
+}
+
 impl<T: for<'a> BinRead<Args<'a> = ()> + for<'a> BinWrite<Args<'a> = bool> + Debug> Debug
     for Optional<T>
 where
@@ -891,6 +900,25 @@ pub(crate) struct MatProps {
     pub zfunc: CmpFunc,
 }
 
+#[binrw::parser(reader, endian)]
+fn parse_mat_maps(version: u32) -> BinResult<[Optional<MAP>; 5]> {
+    let mut maps = std::array::from_fn(|_| Optional::<MAP>::default());
+    let map_count = if version < 3 { 3 } else { 5 };
+    for map in maps.iter_mut().take(map_count) {
+        *map = Optional::<MAP>::read_options(reader, endian, ())?;
+    }
+    Ok(maps)
+}
+
+#[binrw::writer(writer, endian)]
+fn write_mat_maps(maps: &[Optional<MAP>; 5], version: u32, compute: bool) -> BinResult<()> {
+    let map_count = if version < 3 { 3 } else { 5 };
+    for map in maps.iter().take(map_count) {
+        map.write_options(writer, endian, compute)?;
+    }
+    Ok(())
+}
+
 #[binrw]
 #[br(magic = b"MAT\0")]
 #[bw(import_raw(compute: bool))]
@@ -911,7 +939,8 @@ pub(crate) struct MAT {
     pub spec_power: f32,
     pub spec_mult: f32,
     pub mat_props: MatProps,
-    #[bw(args_raw = compute)]
+    #[br(parse_with = parse_mat_maps, args(version))]
+    #[bw(write_with = write_mat_maps, args(*version, compute))]
     pub maps: [Optional<MAP>; 5], // diffuse, metallic, env, bump, glow
 }
 
@@ -1204,9 +1233,8 @@ pub(crate) struct NAM {
     #[br(try_map(|v: u32| parse_ani_track_type(v)))]
     #[bw(map = encode_ani_track_type)]
     pub cm3_flags: BTreeSet<AniTrackType>,
-    #[br(assert(opt_flags & 0xfff8 == 0x8000u32))]
-    #[br(map(|v: u32| v|0x8000u32))]
-    #[bw(map = |v: &u32| *v | 0x8000u32)]
+    #[br(assert(opt_flags & 0xfff8 == 0, "invalid NAM opt_flags"))]
+    #[bw(assert(*opt_flags & 0xfff8 == 0, "invalid NAM opt_flags"))]
     pub opt_flags: u32,
     #[br(assert(stm_flags & 0xfff8 == 0))]
     pub stm_flags: u32,

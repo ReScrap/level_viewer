@@ -191,7 +191,8 @@ Notes:
 - Purpose: Full material definition.
 - Invariants: `version in 1..=3`.
 - Fields: optional name (v2+), color terms, spec terms, `mat_props`, five optional map slots (`diffuse`, `metallic`, `env`, `bump`, `glow`).
-- Ghidra cross-check: `read_MAT` reads up to 5 slots, but for version <3 it only serializes first 3 maps.
+- Version-specific map count: v1/v2 store only the first 3 map slots on disk; v3 stores all 5. The parser normalizes to 5 entries in memory and fills missing trailing slots as `None`.
+- Ghidra cross-check: `read_MAT` breaks after 3 maps when `version < 3`.
 
 ### `LightColor` (struct)
 - Purpose: Pair of color and scalar intensity, used by scene ambient/background.
@@ -236,9 +237,9 @@ Notes:
 - Invariants:
   - `version == 1`
   - `cm3_flags` must fit supported mask
-  - `opt_flags` and `stm_flags` are constrained (`opt_flags` always ORed with `0x8000`)
+  - `opt_flags` and `stm_flags` are constrained to supported low bits only (`& 0xfff8 == 0`)
 - Fields: frame range, active channel flags, parsed `tracks`, optional `EVA`.
-- Ghidra cross-check: `read_NAM` asserts `(flags & 0xffffef60)==0` and validates opt/stream masks.
+- Ghidra cross-check: `read_NAM` asserts `(flags & 0xffffef60)==0` and validates opt/stream masks without requiring `0x8000` in file data.
 
 ### `NABK` (struct, block magic `NABK`)
 - Purpose: Raw animation byte bank used by `ANI` track blocks.
@@ -365,3 +366,7 @@ The following parser invariants are directly mirrored in game loader assertions/
 - `CMSH`/`AMC`/`QUAD`: collision versions, sizes, recursive quad read, trailing empty `AMC` block (`read_CMSH`, `read_AMC`, `read_QUAD`).
 - `EMI`/`TRI`: `EMI` versions 103-105 and inline `TRI` parsing including v105 zone-name behavior (`read_EMI`, `0x0068dbc0`).
 - `SM3`/`CM3`: timestamp magic `0x6515f8` and `SCN` embedding (`read_SM3`, `read_CM3`).
+
+Recent alignment updates based on Ghidra:
+- `MAT` map serialization now follows engine behavior: 3 maps for v1/v2, 5 for v3.
+- `NAM.opt_flags` now matches file semantics from engine read/write paths (supported low bits only; no forced on-disk `0x8000`).
