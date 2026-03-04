@@ -2754,6 +2754,13 @@ impl DroneCam {
             tran.rotation *= Quat::from_euler(EulerRot::YXZ, yaw, pitch, roll);
             let ang_drag = drone.ang_vel * dt * (global_drag + brake * 5.0) * ang_drag_mult;
             drone.ang_vel -= ang_drag;
+
+            // Keep keyboard/mouse camera level: preserve yaw/pitch but relax roll to horizon.
+            let (yaw, pitch, roll) = tran.rotation.to_euler(EulerRot::YXZ);
+            let level_lerp = 1.0 - (-8.0 * dt).exp();
+            let leveled_roll = roll.lerp(0.0, level_lerp);
+            tran.rotation = Quat::from_euler(EulerRot::YXZ, yaw, pitch, leveled_roll);
+            drone.ang_vel.z = drone.ang_vel.z.lerp(0.0, level_lerp);
         }
 
         {
