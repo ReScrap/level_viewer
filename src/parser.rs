@@ -485,17 +485,13 @@ pub(crate) struct MD3D {
     pub skin: Option<Table<0x10, MD3D_Skin>>,
     pub mat_index: i32,
     // Stored as read_int_nonzero/write_int(bool) in CMallaD3D (offsets +0x50/+0x51).
-    pub feature_flag_0x50: u32,
-    pub feature_flag_0x51: u32,
-    #[br(count = 0x18)]
-    #[bw(assert(field_0x54_blob.len() == 0x18))]
-    field_0x54_blob: Vec<u8>,
-    #[br(count = 0x18)]
-    #[bw(assert(field_0x6c_blob.len() == 0x18))]
-    field_0x6c_blob: Vec<u8>,
-    #[br(count = 0xc)]
-    #[bw(assert(field_0x84_blob.len() == 0xc))]
-    field_0x84_blob: Vec<u8>,
+    // Set from conversion flags bits 0x4 and 0x8 respectively; either one switches
+    // non-envmap meshes to VERT_TEX1_B1 instead of VERT_TEX1 during D3D conversion.
+    pub tex1_b1_flag_from_convert_0x4: u32,
+    pub tex1_b1_flag_from_convert_0x8: u32,
+    pub subtree_bbox: [[f32; 3]; 2],
+    pub local_bbox: [[f32; 3]; 2],
+    pub bbox_center: [f32; 3],
     #[bw(calc = u32::from(child.is_some()))]
     has_child: u32,
     #[br(if(has_child!=0))]
@@ -584,8 +580,8 @@ pub(crate) struct SPR3 {
     version: u32,
     pos: [f32; 3],
     scale: [f32; 2],
-    name_1: PascalString,
-    name_2: PascalString,
+    primary_map_name: PascalString,
+    secondary_map_name: PascalString,
     diffuse_mod: RGBA,
 }
 
@@ -600,11 +596,10 @@ pub(crate) struct SUEL {
     #[bw(calc = 1u32)]
     version: u32,
     bbox: [[f32; 3]; 2],
-    pos: [f32; 3],
-    unk_3: [u8; 4],
-    num_nodes: u32,
-    unk_4: [u8; 4],
-    bbox_2: [[f32; 3]; 2],
+    dims: [f32; 3],
+    grid_size: [u32; 2],
+    num_tris: u32,
+    collision_bbox: [[f32; 3]; 2],
 }
 
 #[binrw]
@@ -675,9 +670,9 @@ pub(crate) struct PORT {
     #[br(assert(version==1,"Invalid PORT version"))]
     #[bw(calc = 1u32)]
     version: u32,
-    width: u32,
-    height: u32,
-    sides: [u32; 2],
+    side_node_indices: [i32; 2],
+    width: f32,
+    height: f32,
 }
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Sequence, Serialize, ToPrimitive)]
@@ -1392,9 +1387,10 @@ pub(crate) struct QUAD {
     #[br(assert(version==1, "Invalid QUAD version"))]
     #[bw(calc = 1u32)]
     version: u32,
-    mesh: u32,
-    table: Table<2, u16>,
-    f_4: [f32; 4],
+    mesh_id: u32,
+    triangle_indices: Table<2, u16>,
+    base_height_range: [f32; 2],
+    active_height_range: [f32; 2],
     #[bw(args_raw = compute)]
     pub child: Optional<Box<QUAD>>,
 }
