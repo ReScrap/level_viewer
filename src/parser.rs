@@ -236,7 +236,8 @@ mod string_encoding_tests {
             skin: super::MD3D_Skin,
         }
 
-        let json = r#"{"skin":{"influence_count":3,"bone_indices":[1,2,3],"weights":[0.5,null,0.5]}}"#;
+        let json =
+            r#"{"skin":{"influence_count":3,"bone_indices":[1,2,3],"weights":[0.5,null,0.5]}}"#;
         let parsed: Wrap = serde_json::from_str(json).unwrap();
         assert!(parsed.skin.weights[1].is_nan());
 
@@ -685,10 +686,7 @@ mod ini_roundtrip_tests {
     #[test]
     fn ini_deserialization_restores_duplicate_keys_from_markers() {
         let mut section = serde_json::Map::new();
-        section.insert(
-            "dup".to_owned(),
-            serde_json::Value::String("1".to_owned()),
-        );
+        section.insert("dup".to_owned(), serde_json::Value::String("1".to_owned()));
         section.insert(
             format!("{DUPLICATE_KEY_PREFIX}0\u{0}dup"),
             serde_json::Value::String("2".to_owned()),
@@ -931,7 +929,10 @@ pub(crate) struct MD3D_Skin {
 mod skin_weights_serde {
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-    pub(super) fn serialize<S>(value: &[f32; 3], serializer: S) -> std::result::Result<S::Ok, S::Error>
+    pub(super) fn serialize<S>(
+        value: &[f32; 3],
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
@@ -950,7 +951,7 @@ mod skin_weights_serde {
 
 mod scale_serde {
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
-    
+
     pub(super) fn serialize<S>(value: &f32, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
@@ -962,7 +963,7 @@ mod scale_serde {
             serializer.serialize_none()
         }
     }
-    
+
     pub(super) fn deserialize<'de, D>(deserializer: D) -> Result<f32, D::Error>
     where
         D: Deserializer<'de>,
