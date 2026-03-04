@@ -26,7 +26,7 @@ use walkdir::WalkDir;
 pub(crate) type IniData = IndexMap<String, IndexMap<String, Option<String>>>;
 
 #[binrw]
-#[derive(Serialize, Debug, Clone)]
+#[derive(Serialize, Debug, Clone, Deserialize)]
 pub(crate) struct PackedEntry {
     pub path: PascalString,
     pub size: u32,
@@ -35,7 +35,7 @@ pub(crate) struct PackedEntry {
 
 #[binrw]
 #[brw(magic = b"BFPK")]
-#[derive(Serialize, Debug)]
+#[derive(Serialize, Debug, Deserialize)]
 pub(crate) struct PackedHeader {
     #[br(temp,assert(version==0))]
     #[bw(calc = 0u32)]
@@ -48,7 +48,7 @@ pub(crate) struct PackedHeader {
 }
 
 #[binrw]
-#[derive(Serialize, Debug)]
+#[derive(Serialize, Debug, Deserialize)]
 pub(crate) struct Table<
     const SIZE: u32,
     T: for<'a> BinRead<Args<'a> = ()> + for<'a> BinWrite<Args<'a> = ()> + 'static,
@@ -72,7 +72,7 @@ pub(crate) struct Table<
 
 #[binrw]
 #[bw(import_raw(compute: bool))]
-#[derive(Clone)]
+#[derive(Clone, Deserialize)]
 pub(crate) struct Optional<T: for<'a> BinRead<Args<'a> = ()> + for<'a> BinWrite<Args<'a> = bool>> {
     #[br(temp)]
     #[bw(calc = u32::from(value.is_some()))]
@@ -195,6 +195,16 @@ impl Serialize for PascalString {
     }
 }
 
+impl<'de> Deserialize<'de> for PascalString {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let string = String::deserialize(deserializer)?;
+        Ok(Self { string })
+    }
+}
+
 impl Display for PascalString {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         Display::fmt(&self.string, f)
@@ -208,7 +218,7 @@ impl Debug for PascalString {
 }
 
 #[binrw]
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct IniSection {
     #[br(temp)]
     #[bw(try_calc = sections.len().try_into())]
@@ -221,7 +231,7 @@ pub(crate) struct IniSection {
 #[binrw]
 #[brw(magic = b"INI\0")]
 #[bw(import_raw(compute: bool))]
-#[derive(Debug)]
+#[derive(Debug, Deserialize)]
 pub(crate) struct INI {
     #[br(temp)]
     #[bw(try_calc = compute_size(self, 8, compute)?.try_into())]
@@ -283,7 +293,7 @@ impl Serialize for INI {
 }
 
 #[binrw]
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Clone, Deserialize)]
 pub(crate) struct RGBA {
     pub r: u8,
     pub g: u8,
@@ -298,13 +308,13 @@ impl RGBA {
 }
 
 #[binrw]
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Clone, Deserialize)]
 #[br(import(n_dims: usize))]
 #[bw(import(n_dims: usize))]
 pub(crate) struct TexCoords(#[br(count=n_dims)] pub Vec<f32>);
 
 #[binrw]
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Clone, Deserialize)]
 #[br(import(vert_fmt: FVF))]
 #[bw(import(vert_fmt: FVF))]
 // https://github.com/elishacloud/dxwrapper/blob/23ffb74c4c93c4c760bb5f1de347a0b039897210/ddraw/IDirect3DDeviceX.cpp#L2642
@@ -339,7 +349,7 @@ pub(crate) struct Vertex {
 }
 
 #[bitsize(3)]
-#[derive(Debug, Serialize, PartialEq, Eq, TryFromBits)]
+#[derive(Debug, Serialize, PartialEq, Eq, TryFromBits, Deserialize)]
 pub(crate) enum Pos {
     XYZ,
     XYZRHW,
@@ -351,7 +361,7 @@ pub(crate) enum Pos {
 }
 
 #[bitsize(32)]
-#[derive(DebugBits, Serialize, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, TryFromBits)]
+#[derive(DebugBits, Serialize, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, TryFromBits, Deserialize)]
 pub(crate) struct FVF {
     reserved: bool,
     pub pos: Pos,
@@ -431,7 +441,7 @@ fn vertex_format_from_id(fmt_id: u32, fmt: u32) -> Result<FVF> {
 #[binrw]
 #[br(import(fmt_id: u32))]
 #[bw(import(fmt_id: u32))]
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Clone, Deserialize)]
 pub(crate) struct LFVFInner {
     #[br(try_map=|v:  u32| vertex_format_from_id(fmt_id,v))]
     #[bw(map = |value: &FVF| u32::from(*value))]
@@ -450,7 +460,7 @@ pub(crate) struct LFVFInner {
 #[binrw]
 #[brw(magic = b"LFVF")]
 #[bw(import_raw(compute: bool))]
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct LFVF {
     #[bw(try_calc = compute_size(self, 8, compute)?.try_into())]
     size: u32,
@@ -465,7 +475,7 @@ pub(crate) struct LFVF {
 }
 
 #[binrw]
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct MD3D_Tris {
     #[bw(try_calc = tris.len().try_into())]
     num_tris: u32,
@@ -477,14 +487,14 @@ pub(crate) struct MD3D_Tris {
 }
 
 #[binrw]
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct MD3D_TriSeg {
     plane_distance_xor: u32,
     pub normal: [f32; 3],
 }
 
 #[binrw]
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct MD3D_Segment {
     triangle_a_index: i16,
     triangle_b_index: i16,
@@ -493,7 +503,7 @@ pub(crate) struct MD3D_Segment {
 }
 
 #[binrw]
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct MD3D_Skin {
     pub influence_count: u8,
     pub bone_indices: [u8; 3],
@@ -503,7 +513,7 @@ pub(crate) struct MD3D_Skin {
 #[binrw]
 #[brw(magic = b"MD3D")]
 #[bw(import_raw(compute: bool))]
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct MD3D {
     #[bw(try_calc = compute_size(self, 8, compute)?.try_into())]
     size: u32,
@@ -540,7 +550,7 @@ pub(crate) struct MD3D {
 }
 
 #[binread]
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub(crate) enum NodeData {
     #[brw(magic = 0x0u32)]
@@ -611,7 +621,7 @@ impl BinWrite for NodeData {
 #[binrw]
 #[brw(magic = b"SPR3")]
 #[bw(import_raw(compute: bool))]
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct SPR3 {
     #[bw(try_calc = compute_size(self, 8, compute)?.try_into())]
     size: u32,
@@ -628,7 +638,7 @@ pub(crate) struct SPR3 {
 #[binrw]
 #[brw(magic = b"SUEL")]
 #[bw(import_raw(compute: bool))]
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct SUEL {
     #[bw(try_calc = compute_size(self, 8, compute)?.try_into())]
     size: u32,
@@ -645,7 +655,7 @@ pub(crate) struct SUEL {
 #[binrw]
 #[brw(magic = b"CAM\0")]
 #[bw(import_raw(compute: bool))]
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct CAM {
     #[bw(try_calc = compute_size(self, 8, compute)?.try_into())]
     size: u32,
@@ -666,7 +676,7 @@ pub(crate) struct CAM {
 #[binrw]
 #[brw(repr=u32)]
 #[repr(u32)]
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub(crate) enum LightType {
     Point = 5000,
     Spot = 5001,
@@ -676,7 +686,7 @@ pub(crate) enum LightType {
 #[binrw]
 #[brw(magic = b"LUZ\0")]
 #[bw(import_raw(compute: bool))]
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct LUZ {
     #[bw(try_calc = compute_size(self, 8, compute)?.try_into())]
     size: u32,
@@ -703,7 +713,7 @@ pub(crate) struct LUZ {
 #[binrw]
 #[brw(magic = b"PORT")]
 #[bw(import_raw(compute: bool))]
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct PORT {
     #[bw(try_calc = compute_size(self, 8, compute)?.try_into())]
     size: u32,
@@ -715,7 +725,7 @@ pub(crate) struct PORT {
     height: f32,
 }
 
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Sequence, Serialize, ToPrimitive)]
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Sequence, Serialize, ToPrimitive, Deserialize)]
 #[repr(u8)]
 pub(crate) enum NodeFlags {
     ROOT,
@@ -763,7 +773,7 @@ fn encode_node_flags(flags: &BTreeSet<NodeFlags>) -> u32 {
 
 #[binrw]
 #[bw(import_raw(compute: bool))]
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct Node {
     pub object_index: i32,
     pub table_index: i32,
@@ -790,7 +800,7 @@ pub(crate) struct Node {
 #[binrw]
 #[brw(magic = b"MAP\0")]
 #[bw(import_raw(compute: bool))]
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Clone, Deserialize)]
 pub(crate) struct MAP {
     #[bw(try_calc = compute_size(self, 8, compute)?.try_into())]
     size: u32,
@@ -817,7 +827,7 @@ pub(crate) struct MAP {
     pub angle: Option<f32>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum TextureType {
     None,
     FxLava,
@@ -849,7 +859,7 @@ fn encode_texture_type(value: &TextureType) -> u8 {
 #[binrw]
 #[brw(repr=u32)]
 #[repr(u32)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Sequence, Serialize, ToPrimitive)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Sequence, Serialize, ToPrimitive, Deserialize)]
 
 pub(crate) enum BlendMode {
     Zero = 1,
@@ -870,7 +880,7 @@ pub(crate) enum BlendMode {
 #[binrw]
 #[brw(repr=u32)]
 #[repr(u32)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Sequence, Serialize, ToPrimitive)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Sequence, Serialize, ToPrimitive, Deserialize)]
 pub(crate) enum CmpFunc {
     Never = 1,
     Less = 2,
@@ -887,7 +897,7 @@ pub(crate) enum CmpFunc {
     BothInvSrcAlpha = 13,
 }
 
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Sequence, Serialize, ToPrimitive, Clone)]
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Sequence, Serialize, ToPrimitive, Clone, Deserialize)]
 #[repr(u8)]
 pub(crate) enum MatPropAttrib {
     NO_COLLID = 0,
@@ -923,7 +933,7 @@ fn encode_mat_prop_flags(flags: &BTreeSet<MatPropAttrib>) -> u16 {
 }
 
 #[binrw]
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Clone, Deserialize)]
 pub(crate) struct MatProps {
     #[br(assert(sub_material==0))]
     pub sub_material: u32,
@@ -963,7 +973,7 @@ fn write_mat_maps(maps: &[Optional<MAP>; 5], version: u32, compute: bool) -> Bin
 #[binrw]
 #[brw(magic = b"MAT\0")]
 #[bw(import_raw(compute: bool))]
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Clone, Deserialize)]
 pub(crate) struct MAT {
     #[bw(try_calc = compute_size(self, 8, compute)?.try_into())]
     size: u32,
@@ -986,7 +996,7 @@ pub(crate) struct MAT {
 }
 
 #[binrw]
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct LightColor {
     pub color: RGBA,
     pub intensity: f32,
@@ -995,7 +1005,7 @@ pub(crate) struct LightColor {
 #[binrw]
 #[brw(magic = b"SCN\0")]
 #[bw(import_raw(compute: bool))]
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct SCN {
     // 0x650220
     #[bw(try_calc = compute_size(self, 8, compute)?.try_into())]
@@ -1042,7 +1052,7 @@ fn convert_timestamp(dt: u32) -> Result<DateTime<Utc>> {
 
 #[binrw]
 #[bw(import_raw(compute: bool))]
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct VertexAnim {
     #[bw(try_calc = tris.len().try_into())]
     num_triangles: u32,
@@ -1054,7 +1064,7 @@ struct VertexAnim {
 #[binrw]
 #[brw(magic = b"EVA\0")]
 #[bw(import_raw(compute: bool))]
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct EVA {
     #[bw(try_calc = compute_size(self, 8, compute)?.try_into())]
     size: u32,
@@ -1068,7 +1078,7 @@ pub(crate) struct EVA {
     verts: Vec<Optional<VertexAnim>>,
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Sequence, Serialize, ToPrimitive)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Sequence, Serialize, ToPrimitive, Deserialize)]
 #[repr(u8)]
 pub(crate) enum AniTrackType {
     Position = 0,   // [f32;3]
@@ -1118,7 +1128,7 @@ fn encode_track_map(track_map: &[Option<u8>]) -> Vec<u8> {
         .collect()
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct BlockInfo {
     pub size: usize,
     pub elem_size: usize,
@@ -1127,7 +1137,7 @@ pub(crate) struct BlockInfo {
     pub track_type: AniTrackType,
 }
 
-#[derive(Debug, Default, Serialize)]
+#[derive(Debug, Default, Serialize, Deserialize)]
 pub(crate) struct AnimFrame {
     pub pos: Option<[f32; 3]>,
     pub rot: Option<[f32; 4]>,
@@ -1137,7 +1147,7 @@ pub(crate) struct AnimFrame {
     pub visibility: Option<bool>,
 }
 
-#[derive(Debug, Default, Serialize)]
+#[derive(Debug, Default, Serialize, Deserialize)]
 pub(crate) struct AnimTracks {
     pub pos: Option<Vec<[f32; 3]>>,
     pub rot: Option<Vec<[f32; 4]>>,
@@ -1252,7 +1262,7 @@ fn write_emi_textures(maps: &Vec<EMI_Textures>) -> BinResult<()> {
 }
 
 #[binrw]
-#[derive(Debug)]
+#[derive(Debug, Deserialize)]
 struct AniStreamHeader {
     size: u16,
     start_frame: u16,
@@ -1262,7 +1272,7 @@ struct AniStreamHeader {
 #[binrw]
 #[brw(magic = b"NAM\0")]
 #[bw(import_raw(compute: bool))]
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct NAM {
     #[bw(try_calc = compute_size(self, 8, compute)?.try_into())]
     size: u32,
@@ -1290,7 +1300,7 @@ pub(crate) struct NAM {
 #[binrw]
 #[brw(magic = b"NABK")]
 #[bw(import_raw(compute: bool))]
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct NABK {
     #[bw(try_calc = compute_size(self, 8, compute)?.try_into())]
     size: u32,
@@ -1301,7 +1311,7 @@ pub(crate) struct NABK {
 #[binrw]
 #[brw(magic = b"ANI\0")]
 #[bw(import_raw(compute: bool))]
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct ANI {
     #[bw(try_calc = compute_size(self, 8, compute)?.try_into())]
     size: u32,
@@ -1386,7 +1396,7 @@ impl ANI {
 
 #[binrw]
 #[bw(import_raw(compute: bool))]
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct SM3 {
     #[bw(try_calc = compute_size(self, 4, compute)?.try_into())]
     size: u32,
@@ -1417,7 +1427,7 @@ impl SM3 {
 
 #[binrw]
 #[bw(import_raw(compute: bool))]
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct CM3 {
     #[bw(try_calc = compute_size(self, 4, compute)?.try_into())]
     size: u32,
@@ -1448,7 +1458,7 @@ impl CM3 {
 
 #[binrw]
 #[bw(import_raw(compute: bool))]
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct Dummy {
     has_next: u32,
     pub name: PascalString,
@@ -1460,7 +1470,7 @@ pub(crate) struct Dummy {
 
 #[binrw]
 #[bw(import_raw(compute: bool))]
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct DUM {
     #[bw(try_calc = compute_size(self, 4, compute)?.try_into())]
     size: u32,
@@ -1480,7 +1490,7 @@ pub(crate) struct DUM {
 #[binrw]
 #[brw(magic = b"QUAD")]
 #[bw(import_raw(compute: bool))]
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct QUAD {
     #[bw(try_calc = compute_size(self, 8, compute)?.try_into())]
     size: u32,
@@ -1496,7 +1506,7 @@ pub(crate) struct QUAD {
 }
 
 #[binrw]
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct CMSH_Tri {
     cache_stamp: u32,
     pub normal: [f32; 3],
@@ -1508,7 +1518,7 @@ pub(crate) struct CMSH_Tri {
 #[binrw]
 #[brw(magic = b"CMSH")]
 #[bw(import_raw(compute: bool))]
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct CMSH {
     #[bw(try_calc = compute_size(self, 8, compute)?.try_into())]
     size: u32,
@@ -1531,7 +1541,7 @@ pub(crate) struct CMSH {
 
 #[binrw]
 #[brw(magic = b"AMC\0")]
-#[derive(Debug, Serialize, Default)]
+#[derive(Debug, Serialize, Default, Deserialize)]
 struct EmptyAMC {
     #[br(assert(size==0))]
     #[bw(calc = 0u32)]
@@ -1541,7 +1551,7 @@ struct EmptyAMC {
 // TODO: OG game uses version_code==1
 #[binrw]
 #[bw(import_raw(compute: bool))]
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct AMC {
     #[bw(try_calc = compute_size(self, 4, compute)?.try_into())]
     size: u32,
@@ -1580,7 +1590,7 @@ pub(crate) struct AMC {
 #[binrw]
 #[br(import(version: u32))]
 #[bw(import_raw(compute: bool))]
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct TriV104 {
     #[br(if(version>=0x69))]
     #[bw(if(zone_name.is_some()))]
@@ -1600,7 +1610,7 @@ pub(crate) struct TriV104 {
 #[binrw]
 #[br(magic = b"TRI\0", import(version: u32))]
 #[bw(import_raw(compute: bool))]
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct TRI {
     #[bw(try_calc = compute_size(self, 8, compute)?.try_into())]
     size: u32,
@@ -1613,7 +1623,7 @@ pub(crate) struct TRI {
 }
 
 #[binrw]
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct EMI_Textures {
     pub key: u32,
     #[br(if(key!=0))]
@@ -1623,7 +1633,7 @@ pub(crate) struct EMI_Textures {
 
 #[binrw]
 #[bw(import_raw(compute: bool))]
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct EMI {
     #[bw(try_calc = compute_size(self, 4, compute)?.try_into())]
     size: u32,
@@ -1663,7 +1673,7 @@ impl EMI {
 }
 
 #[binrw]
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub(crate) enum Data {
     #[brw(magic = b"SM3\0")]
@@ -1720,7 +1730,7 @@ fn load_ini(path: &VfsPath) -> IniData {
     Ini::new().read(data).unwrap_or_default()
 }
 
-#[derive(Serialize, Debug)]
+#[derive(Serialize, Debug, Deserialize)]
 pub(crate) struct Level {
     pub config: IniData,
     pub moredummies: IniData,
@@ -1909,10 +1919,10 @@ pub(crate) mod multi_pack_fs {
     use color_eyre::eyre::bail;
     use vfs::{SeekAndRead, VfsPath};
 
-    use super::{ParsedData, PathBuf, Result, Serialize};
+    use super::{Deserialize, ParsedData, PathBuf, Result, Serialize};
     use crate::packed_vfs::MultiPack;
 
-    #[derive(Serialize, Debug)]
+    #[derive(Serialize, Debug, Deserialize)]
     pub(crate) struct Entry {
         pub path: String,
         pub size: u64,
