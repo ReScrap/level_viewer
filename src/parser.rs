@@ -125,9 +125,12 @@ fn encode_pascal_string(string: &str) -> Vec<u8> {
     if string.is_empty() {
         return vec![];
     }
-    let mut bytes = latin1str::Latin1String::encode(string)
-        .as_bytes()
-        .to_owned();
+    // Scrapland stores these pascal strings as raw single-byte chars.
+    // Keep a one-byte-per-codepoint mapping (Latin-1-style) to avoid UTF-8 expansion.
+    let mut bytes: Vec<u8> = string
+        .chars()
+        .map(|c| u8::try_from(c as u32).unwrap_or(b'?'))
+        .collect();
     if !bytes.ends_with(&[0]) {
         bytes.push(0)
     }
@@ -135,10 +138,26 @@ fn encode_pascal_string(string: &str) -> Vec<u8> {
 }
 
 fn decode_pascal_string(bytes: &[u8]) -> String {
-    let mut bytes = bytes.to_vec();
-    latin1str::Latin1Str::from_bytes_until_nul(&bytes)
-        .decode()
-        .to_string()
+    bytes.iter().map(|&b| b as char).collect()
+}
+
+#[cfg(test)]
+mod string_encoding_tests {
+    use super::{decode_pascal_string, encode_pascal_string};
+
+    #[test]
+    fn pascal_string_roundtrips_single_byte_high_ascii() {
+        let raw = [0xF1, 0x00]; // "ñ\0" in game data
+        let decoded = decode_pascal_string(&raw);
+        let encoded = encode_pascal_string(&decoded);
+        assert_eq!(encoded, raw);
+    }
+
+    #[test]
+    fn pascal_string_encoding_does_not_utf8_expand() {
+        let encoded = encode_pascal_string("Señor\0");
+        assert_eq!(encoded, b"Se\xF1or\0");
+    }
 }
 
 #[binrw]
@@ -724,9 +743,13 @@ pub(crate) enum NodeFlags {
     NO_LIGHTMAP,
     NO_SECTOR,
     AREA_LIGHT,
+    DUDV_PASS,
 }
 
 fn parse_node_flags(flags: u32) -> BTreeSet<NodeFlags> {
+    let inv_flag_mask = !enum_iterator::all::<NodeFlags>()
+        .fold(0u32, |acc, flag| acc | (1 << flag.to_u8().unwrap_or(0xff)));
+    assert_eq!(flags & inv_flag_mask, 0);
     enum_iterator::all::<NodeFlags>()
         .filter_map(|flag| ((flags & (1 << flag.to_u8().unwrap_or(0xff))) != 0).then_some(flag))
         .collect()
@@ -877,11 +900,17 @@ pub(crate) enum MatPropAttrib {
     USE_AMBIENT = 7,
     AREA_LIGHT = 8,
     SHADER = 9,
+    NO_ALPHA_BLEND = 10,
     ZBIAS = 11,
+    TRANSP_ONEONE = 12,
+    UNUSED_13 = 13,
     XSHADOW = 14,
 }
 
 fn parse_mat_prop_flags(flags: u16) -> BTreeSet<MatPropAttrib> {
+    let inv_flag_mask = !enum_iterator::all::<MatPropAttrib>()
+        .fold(0u16, |acc, flag| acc | (1 << flag.to_u8().unwrap_or(0xff)));
+    assert_eq!(flags & inv_flag_mask, 0);
     enum_iterator::all::<MatPropAttrib>()
         .filter_map(|flag| ((flags & (1 << flag.to_u8().unwrap_or(0xff))) != 0).then_some(flag))
         .collect()

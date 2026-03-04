@@ -274,46 +274,103 @@ fn main() -> Result<()> {
     //     }
     // return Ok(());
     // // }
-    // {
-    //     let mut total = 0;
-    //     let mut failed = 0;
-    //     'outer: for entry in fs.entries()? {
-    //         if [".cm3",".sm3",".emi",".dum",".amc"].iter().any(|e| entry.path.ends_with(e)) {
-    //             total += 1;
-    //             let data = match fs.parse_file(&entry.path) {
-    //                 Ok(data) => data,
-    //                 Err(err) => {
-    //                     println!("Fail: {}: {:#}", entry.path, err);
-    //                     failed += 1;
-    //                     continue;
-    //                 }
-    //             };
-    //             if let Some(ani) = match data {
-    //                 ParsedData::Data(Data::CM3(CM3 {
-    //                     scene: parser::SCN { ref ani, .. },
-    //                     ..
-    //                 })) | ParsedData::Data(Data::SM3(SM3 {
-    //                     scene: parser::SCN { ref ani, .. },
-    //                     ..
-    //                 })) => ani.get(),
-    //                 _ => {
-    //                     continue;
-    //                 }
-    //             }
-    //             {
-    //                 for track in ani.track_map.iter().filter_map(|v| *v) {
-    //                     if ani.get_track(track as usize).is_err() {
-    //                         println!("Fail: {}", entry.path);
-    //                         failed += 1;
-    //                         continue 'outer;
-    //                     }
-    //                 }
-    //             }
-    //         }
-    //     }
-    //     println!("CM3/SM3/EMI/DUM/AMC Parser: {}/{} OK", total - failed, total);
-    //     return Ok(());
-    // }
+    {
+        let mut total = 0;
+        let mut failed = 0;
+        let mut fail_match = 0;
+        let mut max_diff = 0;
+        'outer: for entry in fs.entries()? {
+            if [".cm3", ".sm3", ".emi", ".dum", ".amc"]
+                .iter()
+                .any(|e| entry.path.ends_with(e))
+            {
+                total += 1;
+                let data = match fs.parse_file(&entry.path) {
+                    Ok(data) => data,
+                    Err(err) => {
+                        println!("Fail: {}: {:#}", entry.path, err);
+                        failed += 1;
+                        continue;
+                    }
+                };
+                let ani = match data {
+                    ParsedData::Data(Data::CM3(CM3 {
+                        scene: parser::SCN { ref ani, .. },
+                        ..
+                    }))
+                    | ParsedData::Data(Data::SM3(SM3 {
+                        scene: parser::SCN { ref ani, .. },
+                        ..
+                    })) => ani.get(),
+                    _ => {
+                        continue;
+                    }
+                };
+                if let Some(ani) = ani {
+                    for track in ani.track_map.iter().filter_map(|v| *v) {
+                        if ani.get_track(track as usize).is_err() {
+                            println!("Fail: {}", entry.path);
+                            failed += 1;
+                            continue 'outer;
+                        }
+                    }
+                };
+                let ParsedData::Data(data) = data else {
+                    continue;
+                };
+                let mut orig_bytes = Vec::new();
+                let mut orig_file = fs.open_file(&entry.path).unwrap();
+                orig_file.read_to_end(&mut orig_bytes).unwrap();
+                let mut buffer = Cursor::new(Vec::new());
+                data.write_le(&mut buffer).unwrap();
+                let buffer = buffer.into_inner();
+                if buffer.len() != orig_bytes.len() {
+                    eprintln!(
+                        "{} LEN_MISMATCH: {} vs {}",
+                        entry.path,
+                        buffer.len(),
+                        orig_bytes.len()
+                    );
+                    let diff = buffer.len().abs_diff(orig_bytes.len());
+                    if diff > max_diff {
+                        std::fs::write("orig.bin", &orig_bytes)?;
+                        std::fs::write("buffer.bin", &buffer)?;
+                        max_diff = diff;
+                    }
+                    fail_match += 1;
+                    continue;
+                }
+                if buffer != orig_bytes {
+                    let first_diff = buffer
+                        .iter()
+                        .zip(orig_bytes.iter())
+                        .take_while(|(a, b)| a == b)
+                        .count();
+                    println!(
+                        "{path} @ {first_diff} ({buf_len} vs {orig_len})",
+                        path = entry.path,
+                        buf_len = buffer.len(),
+                        orig_len = orig_bytes.len()
+                    );
+                    let start = first_diff.saturating_sub(16);
+                    rhexdump!(&buffer[start..first_diff + 16], start as u64);
+                    rhexdump!(&orig_bytes[start..first_diff + 16], start as u64);
+                    std::fs::write("orig.bin", &orig_bytes)?;
+                    std::fs::write("buffer.bin", &buffer)?;
+                    // std::process::exit(1);
+                    fail_match += 1;
+                    continue;
+                };
+            }
+        }
+        println!(
+            "CM3/SM3/EMI/DUM/AMC Parser: {}/{} parsed OK, {} failed to reconstruct",
+            total - failed,
+            total,
+            fail_match
+        );
+        return Ok(());
+    }
     // {
     //     let mut dump_map: HashMap<String, HashMap<String, AnimTracks>> = HashMap::default();
     //     for entry in fs.entries()? {
@@ -1770,8 +1827,14 @@ fn inspector(
             };
             let mat_name = mat_name.as_str();
             ui.label(format!("Material: {mat_name}"));
-            ui.label(format!("Orig Blend Mode: {:?}", scrap_mat.mat_props.src_blend));
-            ui.label(format!("Dest Blend Mode: {:?}", scrap_mat.mat_props.dst_blend));
+            ui.label(format!(
+                "Orig Blend Mode: {:?}",
+                scrap_mat.mat_props.src_blend
+            ));
+            ui.label(format!(
+                "Dest Blend Mode: {:?}",
+                scrap_mat.mat_props.dst_blend
+            ));
             ui.label(format!("Two Sided: {}", scrap_mat.mat_props.two_sided != 0));
             ui.label(format!(
                 "Dyn. Illum.: {}",
@@ -2949,7 +3012,10 @@ impl CameraBundle {
                     DroneAction::Yaw,
                     GamepadStick::RIGHT.with_circle_deadzone(0.01).x,
                 )
-                .with_axis(DroneAction::Pitch, MouseMoveAxis::Y.sensitivity(0.5).inverted())
+                .with_axis(
+                    DroneAction::Pitch,
+                    MouseMoveAxis::Y.sensitivity(0.5).inverted(),
+                )
                 .with_axis(DroneAction::Yaw, MouseMoveAxis::X.sensitivity(0.5))
                 .with(DroneAction::Boost, GamepadButton::RightTrigger)
                 .with(DroneAction::Boost, MouseButton::Right)
