@@ -251,6 +251,81 @@ fn dump_ani(fs: &MultiPackFS, sm3: &str, cm3: &str) -> Result<HashMap<String, An
     return Ok(track_map);
 }
 
+fn find_numeric_null_candidates(json: &str, limit: usize) -> Vec<String> {
+    fn fmt_path(path: &[String]) -> String {
+        let mut out = String::new();
+        for part in path {
+            if let Some(idx) = part.strip_prefix('#') {
+                out.push('[');
+                out.push_str(idx);
+                out.push(']');
+            } else if out.is_empty() {
+                out.push_str(part);
+            } else {
+                out.push('.');
+                out.push_str(part);
+            }
+        }
+        out
+    }
+
+    fn walk(
+        value: &serde_json::Value,
+        path: &mut Vec<String>,
+        out: &mut Vec<String>,
+        limit: usize,
+    ) {
+        if out.len() >= limit {
+            return;
+        }
+        match value {
+            serde_json::Value::Array(arr) => {
+                let has_null = arr.iter().any(serde_json::Value::is_null);
+                let has_num = arr.iter().any(serde_json::Value::is_number);
+                if has_null && has_num {
+                    for (i, item) in arr.iter().enumerate() {
+                        if out.len() >= limit {
+                            return;
+                        }
+                        if item.is_null() {
+                            path.push(format!("#{i}"));
+                            out.push(fmt_path(path));
+                            path.pop();
+                        }
+                    }
+                }
+                for (i, item) in arr.iter().enumerate() {
+                    if out.len() >= limit {
+                        return;
+                    }
+                    path.push(format!("#{i}"));
+                    walk(item, path, out, limit);
+                    path.pop();
+                }
+            }
+            serde_json::Value::Object(obj) => {
+                for (k, v) in obj {
+                    if out.len() >= limit {
+                        return;
+                    }
+                    path.push(k.clone());
+                    walk(v, path, out, limit);
+                    path.pop();
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(json) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    let mut path = Vec::new();
+    walk(&value, &mut path, &mut out, limit);
+    out
+}
+
 fn main() -> Result<()> {
     color_eyre::install()?;
     let packed_files = get_packed_files()?;
@@ -325,7 +400,24 @@ fn main() -> Result<()> {
                     Err(err) => {
                         let col = err.inner().column();
                         let line = err.inner().line();
-                        eprintln!("{} JSON_ROUNDTRIP_FAIL [{} {}:{}]: {}", entry.path, err.path(), line, col,  err);
+                        eprintln!(
+                            "{} JSON_ROUNDTRIP_FAIL [{} {}:{}]: {}",
+                            entry.path,
+                            err.path(),
+                            line,
+                            col,
+                            err
+                        );
+                        if err.path().to_string() == "." {
+                            let suspects = find_numeric_null_candidates(&data, 16);
+                            if !suspects.is_empty() {
+                                eprintln!(
+                                    "{} JSON_ROUNDTRIP_SUSPECT_PATHS: {}",
+                                    entry.path,
+                                    suspects.join(", ")
+                                );
+                            }
+                        }
                         std::fs::write("roundtrip_error.json", &data)?;
                         fail_match += 1;
                         continue;
