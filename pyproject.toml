@@ -3,8 +3,7 @@ name = "bevy-test"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.13"
 dependencies = [
     "bpy>=4.5.3",
-    "mitsuba>=3.7.0",
 ]
