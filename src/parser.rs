@@ -1142,10 +1142,7 @@ pub(crate) struct QUAD {
     mesh: u32,
     table: Table<2, u16>,
     f_4: [f32; 4],
-    #[br(temp)]
-    num_children: u32,
-    #[br(count=num_children)]
-    pub children: Vec<QUAD>,
+    pub child: Optional<Box<QUAD>>,
 }
 
 #[binread]

@@ -48,7 +48,7 @@ serde = { version = "1.0", features = ["derive"] }
 steamlocate = "2.0"
 vfs = "0.12"
 walkdir = "2.5"
-bevy = { version = "0.18.0", features = ["dds", "dynamic_linking"] }
+bevy = { version = "0.18.0", features = ["dds","bmp", "dynamic_linking"] }
 bevy-inspector-egui = "0.36"
 smooth-bevy-cameras = "0.14.0"
 egui_file = "0.25"
