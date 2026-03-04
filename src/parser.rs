@@ -439,17 +439,17 @@ pub(crate) struct MD3D_Tris {
 #[binrw]
 #[derive(Debug, Serialize)]
 pub(crate) struct MD3D_TriSeg {
-    dist_xor: u32,
+    plane_distance_xor: u32,
     pub normal: [f32; 3],
 }
 
 #[binrw]
 #[derive(Debug, Serialize)]
 pub(crate) struct MD3D_Segment {
-    tri_a: i16,
-    tri_b: i16,
-    vert_a: u16,
-    vert_b: u16,
+    triangle_a_index: i16,
+    triangle_b_index: i16,
+    vertex_a_index: u16,
+    vertex_b_index: u16,
 }
 
 #[binrw]
@@ -648,13 +648,13 @@ pub(crate) struct LUZ {
     pub shadows: u8,
     pub pos: [f32; 3],
     pub dir: [f32; 3],
-    pub col: RGBA,
+    pub color: RGBA,
     pub power: f32,
-    pub att: [f32; 2],
+    pub attenuation: [f32; 2],
     pub hotspot: f32,
     pub falloff: f32,
     pub mult: f32,
-    pub radcoeff: f32,
+    pub radiosity_coeff: f32,
     #[br(map = |v: u32| v != 0)]
     #[bw(map = |v: &bool| if *v { 1u32 } else { 0u32 })]
     pub active: bool,
@@ -759,7 +759,7 @@ pub(crate) struct MAP {
     pub is_env: u8,
     pub tile: u8,
     pub mirror: u8,
-    pub map_type: u8,
+    pub texture_type: u8,
     pub displacement: [f32; 2],
     pub scale: [f32; 2],
     pub quantity: f32, // Bumpmap scaling
@@ -846,11 +846,11 @@ fn encode_mat_prop_flags(flags: &BTreeSet<MatPropAttrib>) -> u16 {
 pub(crate) struct MatProps {
     #[br(assert(sub_material==0))]
     pub sub_material: u32,
-    pub orig: BlendMode,
-    pub dest: BlendMode,
+    pub src_blend: BlendMode,
+    pub dst_blend: BlendMode,
     pub two_sided: u8,
     pub dyn_illum: u8,
-    pub dif_alpha: u8,
+    pub diffuse_alpha: u8,
     pub env_map: u8,
     #[br(map=parse_mat_prop_flags)]
     #[bw(map=encode_mat_prop_flags)]
@@ -944,9 +944,9 @@ fn convert_timestamp(dt: u32) -> Result<DateTime<Utc>> {
 #[derive(Debug, Serialize)]
 struct VertexAnim {
     #[bw(try_calc = tris.len().try_into())]
-    n_tr: u32,
+    num_triangles: u32,
     fps: f32,
-    #[br(count=n_tr)]
+    #[br(count=num_triangles)]
     tris: Vec<[u8; 3]>,
 }
 
@@ -1213,7 +1213,7 @@ pub(crate) struct ANI {
     pub last_frame: u32,
     #[bw(try_calc = tracks.len().try_into())]
     pub num_objects: u32,
-    active_flag: u32,
+    is_active: u32,
     #[bw(try_calc = track_map.len().try_into())]
     num_nodes: u32,
     #[br(count=num_nodes, map=|data: Vec<u8>| data.iter().map(|&v| (v!=0).then_some(v-1)).collect())]
@@ -1290,15 +1290,15 @@ impl ANI {
 pub(crate) struct SM3 {
     #[bw(try_calc = compute_size(self, 8, compute)?.try_into())]
     size: u32,
-    #[br(temp,assert(const_1==0x6515f8,"Invalid timestamp"))]
+    #[br(temp,assert(timestamp_magic==0x6515f8,"Invalid timestamp"))]
     #[bw(calc = 0x6515f8u32)]
-    const_1: u32,
+    timestamp_magic: u32,
     #[br(try_map=convert_timestamp)]
     #[bw(map = |value: &DateTime<Utc>| value.timestamp() as u32)]
-    time_1: DateTime<Utc>,
+    dependency_timestamp_a: DateTime<Utc>,
     #[br(try_map=convert_timestamp)]
     #[bw(map = |value: &DateTime<Utc>| value.timestamp() as u32)]
-    time_2: DateTime<Utc>,
+    dependency_timestamp_b: DateTime<Utc>,
     #[bw(args_raw = compute)]
     pub scene: SCN,
 }
@@ -1321,15 +1321,15 @@ impl SM3 {
 pub(crate) struct CM3 {
     #[bw(try_calc = compute_size(self, 8, compute)?.try_into())]
     size: u32,
-    #[br(temp,assert(const_1==0x6515f8,"Invalid timestamp"))]
+    #[br(temp,assert(timestamp_magic==0x6515f8,"Invalid timestamp"))]
     #[bw(calc = 0x6515f8u32)]
-    const_1: u32,
+    timestamp_magic: u32,
     #[br(try_map=convert_timestamp)]
     #[bw(map = |value: &DateTime<Utc>| value.timestamp() as u32)]
-    time_1: DateTime<Utc>,
+    dependency_timestamp_a: DateTime<Utc>,
     #[br(try_map=convert_timestamp)]
     #[bw(map = |value: &DateTime<Utc>| value.timestamp() as u32)]
-    time_2: DateTime<Utc>,
+    dependency_timestamp_b: DateTime<Utc>,
     #[bw(args_raw = compute)]
     pub scene: SCN,
 }
@@ -1398,11 +1398,11 @@ pub(crate) struct QUAD {
 #[binrw]
 #[derive(Debug, Serialize)]
 pub(crate) struct CMSH_Tri {
-    t: u32,
+    cache_stamp: u32,
     pub normal: [f32; 3],
-    dist: f32,
+    plane_distance: f32,
     pub idx: [u16; 3],
-    flags: u16,
+    collision_flags: u16,
 }
 
 #[binrw]
@@ -1419,12 +1419,12 @@ pub(crate) struct CMSH {
     #[bw(calc = 0x34u32)]
     collide_mesh_size: u32,
     pub zone_name: PascalString,
-    mesh_flags: u16,
+    triangle_mesh_flags: u16,
     pub sector: u16,
-    mesh_uid: u16,
-    mesh_id: u8,
-    unk_4: u8,
-    bbox_1: [[f32; 3]; 2],
+    mesh_unique_id: u16,
+    load_mesh_slot: u8,
+    is_out_sector: u8,
+    bbox: [[f32; 3]; 2],
     pub verts: Table<0xc, [f32; 3]>,
     pub tris: Table<0x1c, CMSH_Tri>,
 }
@@ -1448,12 +1448,12 @@ pub(crate) struct AMC {
     #[br(assert(version==100,"Invalid AMC version"))]
     #[bw(calc = 100u32)]
     version: u32,
-    #[br(assert(version_code==0, "Invalid AMC version_code: {}", version_code))]
-    version_code: u32,
-    bbox_1: [[f32; 3]; 2],
-    num_tris: u32,
-    bbox_2: [[f32; 3]; 2],
-    unk: [f32; 3],
+    #[br(assert(amc_version_code==0, "Invalid AMC version_code: {}", amc_version_code))]
+    amc_version_code: u32,
+    collision_bbox: [[f32; 3]; 2],
+    total_triangles: u32,
+    quad_grid_bbox: [[f32; 3]; 2],
+    quad_grid_center: [f32; 3],
     #[bw(args_raw = compute)]
     pub cmsh: [CMSH; 2],
     #[bw(try_calc = sector_col.len().try_into())]
@@ -1483,8 +1483,8 @@ pub(crate) struct AMC {
 #[derive(Debug, Serialize)]
 pub(crate) struct TriV104 {
     #[br(if(version>=0x69))]
-    #[bw(if(sector_name.is_some()))]
-    pub sector_name: Option<PascalString>,
+    #[bw(if(zone_name.is_some()))]
+    pub zone_name: Option<PascalString>,
     pub mat_key: u32,
     pub map_key: u32,
     #[bw(try_calc = tris.len().try_into())]
@@ -1492,9 +1492,9 @@ pub(crate) struct TriV104 {
     #[br(count=num_tris)]
     pub tris: Vec<[u16; 3]>,
     #[bw(args_raw = compute)]
-    pub verts_1: LFVF,
+    pub geometry_verts: LFVF,
     #[bw(args_raw = compute)]
-    pub verts_2: LFVF,
+    pub lightmap_verts: LFVF,
 }
 
 #[binrw]
@@ -1506,7 +1506,7 @@ pub(crate) struct TRI {
     size: u32,
     pub flags: u32,
     pub name: PascalString,
-    pub sector_num: u32, // if 0xffffffff sometimes TriV104 has no name_2 field
+    pub zone_index: u32,
     #[br(args(version))]
     #[bw(args_raw = compute)]
     pub data: TriV104,
