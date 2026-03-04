@@ -1,18 +1,16 @@
 use bevy::{
-    pbr::{ExtendedMaterial, MaterialExtension, OpaqueRendererMethod},
-    prelude::*,
-    render::render_resource::{AsBindGroup, ShaderRef},
+    pbr::MaterialExtension, prelude::*, render::render_resource::AsBindGroup, shader::ShaderRef,
 };
 
-#[derive(Asset, AsBindGroup, Reflect, Debug, Clone)]
-pub(crate) struct Hologram {}
+#[derive(Asset, AsBindGroup, Reflect, Debug, Clone, Default)]
+pub(crate) struct TestMaterial {}
 
-impl MaterialExtension for Hologram {
+impl MaterialExtension for TestMaterial {
     fn fragment_shader() -> ShaderRef {
-        "shaders/hologram.wgsl".into()
+        "embedded://level_viewer/shaders/test.wgsl".into()
     }
 
     fn deferred_fragment_shader() -> ShaderRef {
-        "shaders/hologram.wgsl".into()
+        "embedded://level_viewer/shaders/test.wgsl".into()
     }
 }

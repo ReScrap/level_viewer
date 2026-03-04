@@ -1,17 +1,19 @@
 use std::{
     collections::{HashMap, VecDeque},
+    fs::File,
     io::{Cursor, Read, Seek},
     ops::Range,
     path::{Path, PathBuf},
     sync::Arc,
 };
 
-use anyhow::Result;
-use binrw::{io::BufReader, BinReaderExt};
+use color_eyre::eyre::{Context, Result, anyhow, bail};
+use bevy::{asset::io::AsyncSeekForward, tasks::futures_lite::AsyncRead};
+use binrw::{BinReaderExt, io::BufReader};
 use fs_err as fs;
 use memmap2::Mmap;
 use serde::Serialize;
-use vfs::{error::VfsErrorKind, FileSystem, SeekAndWrite, VfsMetadata};
+use vfs::{FileSystem, SeekAndWrite, VfsMetadata, error::VfsErrorKind};
 
 use crate::parser::{PackedEntry, PackedHeader};
 
@@ -77,7 +79,7 @@ impl MultiPack {
         })
     }
 
-    fn get_file(&self, path: &str) -> vfs::VfsResult<FileHandle> {
+    pub(crate) fn get_file(&self, path: &str) -> vfs::VfsResult<FileHandle> {
         match self.tree.get_entry(path)? {
             DirectoryTree::File { data, file_index } => {
                 let Some(file) = self.files.get(*file_index) else {
@@ -182,10 +184,17 @@ impl DirectoryTree {
 }
 
 #[derive(Debug)]
-struct FileHandle {
+pub(crate) struct FileHandle {
     _mm: Arc<Mmap>,
     cursor: Cursor<Arc<[u8]>>,
     data: Range<usize>,
+}
+
+impl FileHandle {
+    pub(crate) fn get<'a>(&'a self) -> &'a [u8] {
+        let b = self.cursor.get_ref();
+        &b[self.data.clone()]
+    }
 }
 
 impl Seek for FileHandle {
@@ -206,6 +215,32 @@ impl FileHandle {
         &self.cursor.get_ref()[idx]
     }
 }
+
+impl AsyncRead for FileHandle {
+    fn poll_read(
+        self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+        buf: &mut [u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        let fh = self.get_mut();
+        std::task::Poll::Ready(fh.cursor.read(buf))
+    }
+}
+
+impl AsyncSeekForward for FileHandle {
+    fn poll_seek_forward(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        offset: u64,
+    ) -> std::task::Poll<std::io::Result<u64>> {
+        let fh = self.get_mut();
+        std::task::Poll::Ready(fh.cursor.seek(std::io::SeekFrom::Current(
+            offset.try_into().map_err(|e| std::io::Error::other(e))?,
+        )))
+    }
+}
+
+impl bevy::asset::io::Reader for FileHandle {}
 
 impl FileSystem for MultiPack {
     fn read_dir(&self, path: &str) -> vfs::VfsResult<Box<dyn Iterator<Item = String> + Send>> {
