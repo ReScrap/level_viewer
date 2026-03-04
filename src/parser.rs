@@ -156,7 +156,11 @@ fn decode_pascal_string(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod string_encoding_tests {
-    use super::{decode_pascal_string, encode_pascal_string};
+    use std::io::Cursor;
+
+    use binrw::{BinReaderExt, BinWrite};
+
+    use super::{Data, decode_pascal_string, encode_pascal_string};
 
     #[test]
     fn pascal_string_roundtrips_single_byte_high_ascii() {
@@ -176,6 +180,36 @@ mod string_encoding_tests {
     fn empty_pascal_string_encodes_as_single_nul() {
         let encoded = encode_pascal_string("");
         assert_eq!(encoded, Vec::<u8>::new());
+    }
+
+    #[test]
+    fn debug_roundtrip_local_orig_bin() {
+        for file in ["orig.bin", "buffer.bin"] {
+            let Ok(bytes) = std::fs::read(file) else {
+                continue;
+            };
+            let mut cur = Cursor::new(bytes);
+            let data: Data = cur.read_le().unwrap();
+            let json = serde_json::to_string(&data).unwrap();
+            if let Err(err) = serde_json::from_str::<Data>(&json) {
+                let line = err.line();
+                let col = err.column();
+                let snippet = json
+                    .lines()
+                    .nth(line.saturating_sub(1))
+                    .map(|l| {
+                        let start = col.saturating_sub(80);
+                        let end = (col + 80).min(l.len());
+                        l.get(start..end).unwrap_or(l)
+                    })
+                    .unwrap_or("");
+                panic!(
+                    "{file}: json roundtrip failed at line {line} col {col}: {err}\ncontext: {snippet}"
+                );
+            }
+            let mut out = Cursor::new(Vec::new());
+            data.write_le(&mut out).unwrap();
+        }
     }
 }
 
@@ -318,7 +352,10 @@ impl Serialize for INI {
             }
             if line.is_empty() {
                 let section = out.entry(section_name.clone()).or_default();
-                section.insert(format!("{EMPTY_LINE_KEY_PREFIX}{empty_line_idx}"), None);
+                section.insert(
+                    format!("{EMPTY_LINE_KEY_PREFIX}{empty_line_idx}"),
+                    Some(String::new()),
+                );
                 empty_line_idx += 1;
                 continue;
             }
@@ -351,7 +388,7 @@ impl<'de> Deserialize<'de> for INI {
             }
 
             for (key, value) in values {
-                if value.is_none() && key.starts_with(EMPTY_LINE_KEY_PREFIX) {
+                if key.starts_with(EMPTY_LINE_KEY_PREFIX) {
                     lines.push(PascalString {
                         // INI empty lines are encoded as an explicit NUL-terminated empty string.
                         string: "\0".to_owned(),
@@ -528,17 +565,17 @@ mod ini_roundtrip_tests {
         let obj = value[""].as_object().unwrap();
         let keys: Vec<&str> = obj.keys().map(|k| k.as_str()).collect();
         assert_eq!(keys, vec!["a", &format!("{EMPTY_LINE_KEY_PREFIX}0"), "b"]);
-        assert_eq!(
-            obj[&format!("{EMPTY_LINE_KEY_PREFIX}0")],
-            serde_json::Value::Null
-        );
+        assert_eq!(obj[&format!("{EMPTY_LINE_KEY_PREFIX}0")], "");
     }
 
     #[test]
     fn ini_deserialization_restores_empty_lines_from_markers() {
         let mut section = serde_json::Map::new();
         section.insert("a".to_owned(), serde_json::Value::String("1".to_owned()));
-        section.insert(format!("{EMPTY_LINE_KEY_PREFIX}0"), serde_json::Value::Null);
+        section.insert(
+            format!("{EMPTY_LINE_KEY_PREFIX}0"),
+            serde_json::Value::String(String::new()),
+        );
         section.insert("b".to_owned(), serde_json::Value::String("2".to_owned()));
         let mut root = serde_json::Map::new();
         root.insert("".to_owned(), serde_json::Value::Object(section));
