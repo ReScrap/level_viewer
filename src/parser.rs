@@ -19,7 +19,7 @@ use log::warn;
 use num_derive::ToPrimitive;
 use num_traits::ToPrimitive;
 use rhexdump::rhexdumps;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use vfs::VfsPath;
 use walkdir::WalkDir;
 
@@ -65,8 +65,9 @@ pub(crate) struct RawTable<const SIZE: u32> {
 
 #[binread]
 #[derive(Serialize, Debug)]
-pub(crate) struct Table<T: for<'a> BinRead<Args<'a> = ()> + 'static> {
+pub(crate) struct Table<const SIZE: u32, T: for<'a> BinRead<Args<'a> = ()> + 'static> {
     num_entries: u32,
+    #[br(assert(entry_size==SIZE))]
     entry_size: u32,
     #[br(count=num_entries)]
     pub data: Vec<T>,
@@ -412,7 +413,7 @@ pub(crate) struct LFVF {
     pub inner: Option<LFVFInner>,
 }
 
-#[binread]
+#[binrw]
 #[derive(Debug, Serialize)]
 pub(crate) struct MD3D_Tris {
     num_tris: u32,
@@ -420,6 +421,30 @@ pub(crate) struct MD3D_Tris {
     tri_size: u32,
     #[br(count=num_tris)]
     pub tris: Vec<[u16; 3]>,
+}
+
+#[binrw]
+#[derive(Debug, Serialize)]
+pub(crate) struct MD3D_TriSeg {
+    dist_xor: u32,
+    pub normal: [f32; 3],
+}
+
+#[binrw]
+#[derive(Debug, Serialize)]
+pub(crate) struct MD3D_Segment {
+    tri_a: i16,
+    tri_b: i16,
+    vert_a: u16,
+    vert_b: u16,
+}
+
+#[binrw]
+#[derive(Debug, Serialize)]
+pub(crate) struct MD3D_Skin {
+    pub influence_count: u8,
+    pub bone_indices: [u8; 3],
+    pub weights: [f32; 3],
 }
 
 #[binread]
@@ -432,24 +457,25 @@ pub(crate) struct MD3D {
     pub name: PascalString,
     pub tris: MD3D_Tris,
     pub verts: LFVF,
-    vert_orig: RawTable<2>, // Vert orig
-    pub unk_int_1: u32,
-    unk_table_2: RawTable<0x10>,
-    unk_table_3: RawTable<8>,
-    unk_table_4: RawTable<0xc>,
-    unk_table_5: RawTable<4>, // Tri Flags
-    pub unk_int_2: u32,
-    #[br(if(unk_int_2==0))]
-    unk_table_6: Option<RawTable<0x10>>,
+    pub vert_orig: Table<2, u16>,
+    pub tri_seg_start: u32,
+    pub tri_seg: Table<0x10, MD3D_TriSeg>,
+    pub segments: Table<8, MD3D_Segment>,
+    pub vert_orig_pos: Table<0xc, [f32; 3]>,
+    pub tri_flags: Table<4, u32>,
+    pub skin_ref: u32,
+    #[br(if(skin_ref==0))]
+    pub skin: Option<Table<0x10, MD3D_Skin>>,
     pub mat_index: i32,
-    pub unk_int_5: u32,
-    pub unk_int_6: u32,
+    // Stored as read_int_nonzero/write_int(bool) in CMallaD3D (offsets +0x50/+0x51).
+    pub feature_flag_0x50: u32,
+    pub feature_flag_0x51: u32,
     #[br(count = 0x18)]
-    unk_bytes_1: Vec<u8>,
+    field_0x54_blob: Vec<u8>,
     #[br(count = 0x18)]
-    unk_bytes_2: Vec<u8>,
+    field_0x6c_blob: Vec<u8>,
     #[br(count = 0xc)]
-    unk_bytes_3: Vec<u8>,
+    field_0x84_blob: Vec<u8>,
     has_child: u32,
     #[br(if(has_child!=0))]
     pub child: Option<Box<MD3D>>,
@@ -489,10 +515,10 @@ pub(crate) struct SPR3 {
     #[br(assert(version==1,"Invalid SPR3 version"))]
     version: u32,
     pos: [f32; 3],
-    unk_1: [u8; 8],
+    scale: [f32; 2],
     name_1: PascalString,
     name_2: PascalString,
-    unk_2: u32,
+    diffuse_mod: RGBA,
 }
 
 #[binread]
@@ -517,7 +543,7 @@ pub(crate) struct CAM {
     size: u32,
     #[br(assert(version==1,"Invalid CAM version"))]
     version: u32,
-    unk_1: [f32; 3],
+    angles: [f32; 3],
     origin: [f32; 3],
     target: [f32; 3],
     clip: [f32; 2],
@@ -525,7 +551,7 @@ pub(crate) struct CAM {
     fov: f32,
     phys_aspect_ratio: f32,
     view_aspect_ratio: f32,
-    unk_2: u32,
+    mode: u32,
 }
 
 #[binread]
@@ -557,7 +583,8 @@ pub(crate) struct LUZ {
     pub falloff: f32,
     pub mult: f32,
     pub radcoeff: f32,
-    unk_13: u32,
+    #[br(map = |v: u32| v != 0)]
+    pub active: bool,
 }
 
 #[binread]
@@ -624,7 +651,7 @@ pub(crate) struct Node {
     pub scale: f32,
     pub transform_world: [[f32; 4]; 4], // 0x40 4x4 Matrix
     pub transform_local: [[f32; 4]; 4], // 0x40 4x4 Matrix
-    pub unk_rot: [f32; 4],
+    pub rest_rot: [f32; 4],
     pub axis_scale: [f32; 3],
     pub info: Optional<INI>,
     pub content: Optional<NodeData>,
@@ -639,7 +666,9 @@ pub(crate) struct MAP {
     version: u32,
     pub texture: PascalString,
     pub filter: u8,
-    pub unk_fields: [u8; 3],
+    pub max_anisotropy: u8,
+    pub is_square: u8,
+    pub is_env: u8,
     pub tile: u8,
     pub mirror: u8,
     pub map_type: u8,
@@ -775,14 +804,15 @@ pub(crate) struct SCN {
     pub ambient: LightColor,
     pub background: LightColor,
     pub bbox: [[f32; 3]; 2],
-    unk_1: f32,
+    // #[br(assert(collide_mesh_ref==0))]
+    collide_mesh_ref: u32,
     pub user_props: Optional<INI>,
     #[br(temp)]
     num_materials: u32,
     #[br(count=num_materials)]
     pub mat: Vec<MAT>,
-    #[br(temp,assert(unk_3==1))]
-    unk_3: u32,
+    #[br(temp,assert(nodes_section_marker==1))]
+    nodes_section_marker: u32,
     #[br(temp)]
     num_nodes: u32,
     #[br(count = num_nodes)] // 32
@@ -965,7 +995,7 @@ pub(crate) struct ANI {
     pub first_frame: u32,
     pub last_frame: u32,
     pub num_objects: u32,
-    unk_flags: u32,
+    active_flag: u32,
     num_nodes: u32,
     #[br(count=num_nodes, map=|data: Vec<u8>| data.iter().map(|&v| (v!=0).then_some(v-1)).collect())]
     pub track_map: Vec<Option<u8>>,
@@ -1042,7 +1072,6 @@ pub(crate) struct SM3 {
     time_1: DateTime<Utc>,
     #[br(try_map=convert_timestamp)]
     time_2: DateTime<Utc>,
-    #[br(assert(!scene.nodes.is_empty() && scene.ani.get().is_none()))]
     pub scene: SCN,
 }
 
@@ -1068,7 +1097,6 @@ pub(crate) struct CM3 {
     time_1: DateTime<Utc>,
     #[br(try_map=convert_timestamp)]
     time_2: DateTime<Utc>,
-    #[br(assert(scene.nodes.is_empty() && scene.ani.get().is_some()))]
     pub scene: SCN,
 }
 
@@ -1113,7 +1141,7 @@ pub(crate) struct QUAD {
     #[br(assert(version==1, "Invalid QUAD version"))]
     version: u32,
     mesh: u32,
-    table: Table<u16>,
+    table: Table<2,u16>,
     f_4: [f32; 4],
     #[br(temp)]
     num_children: u32,
@@ -1141,14 +1169,14 @@ pub(crate) struct CMSH {
     #[br(assert(collide_mesh_size==0x34, "Invalid collision mesh size"))]
     collide_mesh_size: u32,
     pub zone_name: PascalString,
-    unk_1: u16,
+    mesh_flags: u16,
     pub sector: u16,
-    unk_2: u16,
-    index: u8,
+    mesh_uid: u16,
+    mesh_id: u8,
     unk_4: u8,
     bbox_1: [[f32; 3]; 2],
-    pub verts: Table<[f32; 3]>,
-    pub tris: Table<CMSH_Tri>,
+    pub verts: Table<0xc, [f32; 3]>,
+    pub tris: Table<0x0, CMSH_Tri>,
 }
 
 #[binread]
@@ -1178,7 +1206,7 @@ pub(crate) struct AMC {
     pub sector_col: Vec<[CMSH; 2]>,
     grid_size: [u32; 2],
     grid_scale: [f32; 2],
-    unk_f: [f32; 2],
+    grid_scale_inv: [f32; 2],
     #[br(temp)]
     num_quads: u32,
     #[br(count=num_quads)]
