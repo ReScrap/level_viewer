@@ -2,9 +2,9 @@
 
 - [x] Animated Textures (.txa file)
 - [ ] SM3 Node instantiation
-  - [ ] Figure out how materials are assigned
+  - [?] Figure out how materials are assigned
 - [x] Fix holo transparency
-- [ ] AMC Collision meshes
+- [x] AMC Collision meshes
 - [?] Write custom shaders to mirror Scrapland's DX8 Pixel Shaders
 - [ ] WASM to run in the browser
 
