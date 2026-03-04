@@ -2,6 +2,26 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## 0.1.0 - 2024-07-11
+#### Build system
+- Add potentially missing cargo features - (a915549) - Daniel Seiller
+- Add linux dependencies - (1b893ee) - Daniel Seiller
+- Fix post-bump hook - (9c64bc3) - Daniel Seiller
+#### Features
+- **(linux_support)** Add linux target - (94e5b73) - Daniel Seiller
+#### Miscellaneous Chores
+- **(version)** 0.0.3 - (5ce6df7) - Daniel Seiller
+- **(version)** 0.0.2 - (f27c585) - Daniel Seiller
+- **(version)** 0.0.1 - (6c40fc2) - Daniel Seiller
+- **(version)** 0.0.1 - (231b9ca) - Daniel Seiller
+- Fix post-bump hook - (69ce905) - Daniel Seiller
+- fix post bump hook - (182831b) - Daniel Seiller
+- cocogitto setup - (178b2dc) - Daniel Seiller
+- cargo-dist setup - (5aba83e) - Daniel Seiller
+- Initial Commit - (60f656e) - Daniel Seiller
+
+- - -
+
 ## 0.0.3 - 2024-07-11
 #### Build system
 - Add linux dependencies - (6c664e9) - Daniel Seiller
