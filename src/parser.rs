@@ -574,7 +574,7 @@ pub(crate) struct Node {
     pub pos_offset: [f32; 3],
     pub rot: [f32; 4],
     pub scale: f32,
-    pub transform: [[f32; 4]; 4], // 0x40 4x4 Matrix
+    pub transform: [[f32; 4]; 4],     // 0x40 4x4 Matrix
     pub transform_inv: [[f32; 4]; 4], // 0x40 4x4 Matrix
     pub unk_rot: [f32; 4],
     pub axis_scale: [f32; 3],
@@ -687,7 +687,7 @@ struct EVA {
 
 #[repr(u32)]
 pub enum StmFlags {
-    ani_pos = 0x1
+    ani_pos = 0x1,
 }
 
 #[repr(u32)]
@@ -696,9 +696,8 @@ pub enum OptFlags {
     anim_pos = 0x1,
     ani_rot = 0x2,
     anim_color_intens = 0x18,
-    anim_visible = 0x80
+    anim_visible = 0x80,
 }
-
 
 #[binread]
 #[br(magic = b"NAM\0")]

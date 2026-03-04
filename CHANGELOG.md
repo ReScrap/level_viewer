@@ -2,6 +2,16 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## 0.2.0 - 2025-01-03
+#### Features
+- **(parser)** expose more parser internals - (dc8baed) - Daniel Seiller
+- **(render)** nicer autofocus - (57ece24) - Daniel Seiller
+#### Miscellaneous Chores
+- **(version)** 0.1.0 - (62987c8) - Daniel Seiller
+- code cleanup, remove unnecessary dependencies - (88bff51) - Daniel Seiller
+
+- - -
+
 ## 0.1.0 - 2024-07-11
 #### Build system
 - Add potentially missing cargo features - (a915549) - Daniel Seiller
