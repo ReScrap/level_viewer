@@ -2728,8 +2728,8 @@ impl DroneCam {
         yaw = yaw.powf(2.0).copysign(yaw);
         let mut pitch = input_state.clamped_value(&DroneAction::Pitch);
         pitch = pitch.powf(2.0).copysign(pitch);
-        let mut roll = input_state.clamped_value(&DroneAction::Roll);
-        roll = roll.powf(2.0).copysign(roll);
+        let mut roll_in = input_state.clamped_value(&DroneAction::Roll);
+        roll_in = roll_in.powf(2.0).copysign(roll_in);
         let turn_boost = input_state.button_value(&DroneAction::TurnBoost);
         let boost = input_state.button_value(&DroneAction::Boost);
         blur.shutter_angle = 60.0 / 24.0 * 0.2;
@@ -2749,28 +2749,37 @@ impl DroneCam {
 
         {
             // Rotation
-            drone.ang_vel -= Vec3::new(yaw, -pitch, roll) * dt * turn_rate;
+            drone.ang_vel -= Vec3::new(yaw, -pitch, roll_in) * dt * turn_rate;
             let yaw = drone.ang_vel.x * dt;
             let pitch = drone.ang_vel.y * dt;
             let roll = drone.ang_vel.z * dt;
-            tran.rotation *= Quat::from_euler(EulerRot::YXZ, yaw, pitch, roll);
+            let local_up = *tran.up();
+            let local_right = *tran.right();
+            let local_forward = *tran.forward();
+            let delta_rot = Quat::from_axis_angle(local_up, yaw)
+                * Quat::from_axis_angle(local_right, pitch)
+                * Quat::from_axis_angle(local_forward, roll);
+            tran.rotation = (delta_rot * tran.rotation).normalize();
             let ang_drag = drone.ang_vel * dt * (global_drag + brake * 5.0) * ang_drag_mult;
             drone.ang_vel -= ang_drag;
 
-            // Keep keyboard/mouse camera level without Euler decomposition.
-            let level_lerp = 1.0 - (-8.0 * dt).exp();
-            let forward = *tran.forward();
-            let level_up = Vec3::Y - forward * Vec3::Y.dot(forward);
-            if level_up.length_squared() > f32::EPSILON {
-                let current_up = *tran.up();
-                let target_up = level_up.normalize();
-                let mut roll_error = current_up.angle_between(target_up);
-                let sign = forward.dot(current_up.cross(target_up)).signum();
-                roll_error *= sign;
-                let correction = Quat::from_axis_angle(forward, roll_error * level_lerp);
-                tran.rotation = correction * tran.rotation;
+            // Auto-level only when the user is not actively rolling.
+            // This keeps keyboard flight horizon-stable while still allowing full flips.
+            if roll_in.abs() < 0.05 {
+                let level_lerp = 1.0 - (-0.8 * dt).exp();
+                let forward = *tran.forward();
+                let level_up = Vec3::Y - forward * Vec3::Y.dot(forward);
+                if level_up.length_squared() > f32::EPSILON {
+                    let current_up = *tran.up();
+                    let target_up = level_up.normalize();
+                    let mut roll_error = current_up.angle_between(target_up);
+                    let sign = forward.dot(current_up.cross(target_up)).signum();
+                    roll_error *= sign;
+                    let correction = Quat::from_axis_angle(forward, roll_error * level_lerp);
+                    tran.rotation = correction * tran.rotation;
+                }
+                drone.ang_vel.z = drone.ang_vel.z.lerp(0.0, level_lerp);
             }
-            drone.ang_vel.z = drone.ang_vel.z.lerp(0.0, level_lerp);
         }
 
         {
@@ -2903,9 +2912,27 @@ impl CameraBundle {
         Self {
             camera: Camera3d::default(),
             inputs: InputMap::default()
-                .with(DroneAction::Throttle, KeyCode::KeyW)
+                .with_axis(
+                    DroneAction::Throttle,
+                    VirtualAxis::new(KeyCode::KeyS, KeyCode::KeyW),
+                )
                 .with(DroneAction::Reverse, KeyCode::KeyS)
-                .with_axis(DroneAction::Strafe, VirtualAxis::ad())
+                .with_axis(
+                    DroneAction::Strafe,
+                    VirtualAxis::new(KeyCode::KeyA, KeyCode::KeyD),
+                )
+                .with_axis(
+                    DroneAction::Yaw,
+                    VirtualAxis::new(KeyCode::ArrowLeft, KeyCode::ArrowRight),
+                )
+                .with_axis(
+                    DroneAction::Pitch,
+                    VirtualAxis::new(KeyCode::ArrowDown, KeyCode::ArrowUp),
+                )
+                .with_axis(
+                    DroneAction::Roll,
+                    VirtualAxis::new(KeyCode::KeyQ, KeyCode::KeyE),
+                )
                 .with_axis(
                     DroneAction::Throttle,
                     VirtualAxis::new(GamepadButton::LeftTrigger2, GamepadButton::RightTrigger2), // GamepadStick::LEFT.inverted_y().with_circle_deadzone(0.01).y,
