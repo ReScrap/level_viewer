@@ -1,7 +1,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque},
     hash::Hash,
-    io::{BufWriter, Read, Write},
+    io::{BufWriter, Cursor, Read, Write},
     ops::{Deref, DerefMut},
     path::PathBuf,
 };
@@ -50,7 +50,7 @@ use bevy_inspector_egui::{
     quick::WorldInspectorPlugin,
     reflect_inspector,
 };
-use binrw::{BinReaderExt, binread};
+use binrw::{BinReaderExt, BinWrite, binread};
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use color_eyre::eyre::{Context, Result, anyhow, bail};
 use configparser::ini::Ini;
@@ -68,7 +68,7 @@ use crate::{
     // materials::Hologram,
     asset_loader::TestAsset,
     materials::TestMaterial,
-    parser::{AniTrackType, AnimTracks, LightType, ParsedData},
+    parser::{AniTrackType, AnimTracks, CM3, LightType, ParsedData, SM3},
 };
 mod asset_loader;
 mod export;
@@ -240,7 +240,10 @@ fn dump_ani(fs: &MultiPackFS, sm3: &str, cm3: &str) -> Result<HashMap<String, An
             {
                 let name = (*node.name).to_owned();
                 let nam = &ani.tracks[ani.track_map[idx].unwrap() as usize];
-                println!("   {}: {:?} ({}+{} frames)", name, nam.cm3_flags, nam.start_frame, nam.frames);
+                println!(
+                    "   {}: {:?} ({}+{} frames)",
+                    name, nam.cm3_flags, nam.start_frame, nam.frames
+                );
                 track_map.insert(name, track);
             }
         }
@@ -249,6 +252,7 @@ fn dump_ani(fs: &MultiPackFS, sm3: &str, cm3: &str) -> Result<HashMap<String, An
 }
 
 fn main() -> Result<()> {
+
     color_eyre::install()?;
     let packed_files = get_packed_files()?;
     let fs = MultiPackFS::new(&packed_files)?;
@@ -273,7 +277,49 @@ fn main() -> Result<()> {
     // return Ok(());
     // }
     {
-        let mut dump_map: HashMap<String,HashMap<String,AnimTracks>> = HashMap::default();
+        let mut total = 0;
+        let mut failed = 0;
+        'outer: for entry in fs.entries()? {
+            if [".cm3",".sm3",".emi",".dum",".amc"].iter().any(|e| entry.path.ends_with(e)) {
+                total += 1;
+                let data = match fs.parse_file(&entry.path) {
+                    Ok(data) => data,
+                    Err(err) => {
+                        println!("Fail: {}: {:#}", entry.path, err);
+                        failed += 1;
+                        continue;
+                    }
+                };
+                if let Some(ani) = match data {
+                    ParsedData::Data(Data::CM3(CM3 {
+                        scene: parser::SCN { ref ani, .. },
+                        ..
+                    })) => ani,
+                    ParsedData::Data(Data::SM3(SM3 {
+                        scene: parser::SCN { ref ani, .. },
+                        ..
+                    })) => ani,
+                    _ => {
+                        continue;
+                    }
+                }
+                .get()
+                {
+                    for track in ani.track_map.iter().filter_map(|v| *v) {
+                        if ani.get_track(track as usize).is_err() {
+                            println!("Fail: {}", entry.path);
+                            failed += 1;
+                            continue 'outer;
+                        }
+                    }
+                }
+            }
+        }
+        println!("CM3/SM3/EMI/DUM/AMC Parser: {}/{} OK", total - failed, total);
+        return Ok(());
+    }
+    {
+        let mut dump_map: HashMap<String, HashMap<String, AnimTracks>> = HashMap::default();
         for entry in fs.entries()? {
             let parts: Vec<&str> = entry.path.split('/').filter(|s| !s.is_empty()).collect();
             if parts.len() > 4
@@ -291,11 +337,11 @@ fn main() -> Result<()> {
                     let scene_path = ["levels", level, "map", anm, &format!("{anm}.sm3")].join("/");
                     println!("{level}: {anm}");
                     let exists = fs.exists(&scene_path).unwrap_or(false);
-                    println!(
-                        "{entry} -> {scene_path}: {exists}",
-                        entry = &entry.path,
+                    println!("{entry} -> {scene_path}: {exists}", entry = &entry.path,);
+                    dump_map.insert(
+                        entry.path.to_owned(),
+                        dump_ani(&fs, &scene_path, &entry.path)?,
                     );
-                    dump_map.insert(entry.path.to_owned(),dump_ani(&fs, &scene_path, &entry.path)?);
                 }
             }
         }

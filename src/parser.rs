@@ -1,15 +1,15 @@
-#![allow(clippy::upper_case_acronyms, non_camel_case_types)]
+﻿#![allow(clippy::upper_case_acronyms, non_camel_case_types)]
 use std::{
     borrow::Borrow,
     collections::{BTreeMap, BTreeSet, HashMap},
     fmt::{Debug, Display},
     io::{BufReader, Cursor, Read, Seek},
-    ops::Deref,
+    ops::{Deref, Index},
     path::{Path, PathBuf},
 };
 
 use bilge::prelude::*;
-use binrw::{args, helpers::until_exclusive, prelude::*};
+use binrw::{args, helpers::until_exclusive, meta::WriteEndian, prelude::*};
 use chrono::{DateTime, Utc};
 use color_eyre::eyre::{Context, Result, anyhow, bail};
 use configparser::ini::{Ini, IniDefault};
@@ -1049,9 +1049,9 @@ impl ANI {
                 AniTrackType::Intensity => out.intensity = Some(parse_track_data(payload)?),
                 AniTrackType::Visibility => {
                     out.visibility = Some(
-                        parse_track_data::<u8>(payload)?
+                        parse_track_data(payload)?
                             .into_iter()
-                            .map(|v| v != 0)
+                            .map(|v: u8| v != 0)
                             .collect(),
                     )
                 }
@@ -1131,6 +1131,8 @@ pub(crate) struct DUM {
     num_dummies: u32,
     #[br(count=num_dummies)]
     pub dummies: Vec<Dummy>,
+    #[br(assert(end_marker==0))]
+    end_marker: u32
 }
 
 #[binread]
@@ -1141,7 +1143,7 @@ pub(crate) struct QUAD {
     #[br(assert(version==1, "Invalid QUAD version"))]
     version: u32,
     mesh: u32,
-    table: Table<2,u16>,
+    table: Table<2, u16>,
     f_4: [f32; 4],
     #[br(temp)]
     num_children: u32,
@@ -1176,7 +1178,7 @@ pub(crate) struct CMSH {
     unk_4: u8,
     bbox_1: [[f32; 3]; 2],
     pub verts: Table<0xc, [f32; 3]>,
-    pub tris: Table<0x0, CMSH_Tri>,
+    pub tris: Table<0x1c, CMSH_Tri>,
 }
 
 #[binread]
@@ -1324,7 +1326,7 @@ fn parse_file(path: &VfsPath) -> Result<Data> {
     if let Ok(n) = fh.read(&mut buffer)
         && n != 0
     {
-        eprintln!("Rest:\n{}", rhexdumps!(&buffer[..n], pos));
+        eprintln!("{} Rest:\n{}", path.as_str(), rhexdumps!(&buffer[..n], pos));
     };
     while let Ok(n) = fh.read(&mut buffer)
         && n != 0
@@ -1706,4 +1708,30 @@ pub(crate) mod multi_pack_fs {
             Ok(data)
         }
     }
+}
+
+// Test Zone :)
+
+fn compute_size<B>(s: B, header_size: u64, compute: bool) -> BinResult<u64>
+where
+    B: for<'a> BinWrite<Args<'a> = bool>,
+{
+    let mut buffer = Cursor::new(Vec::new());
+    if !compute {
+        s.write_le_args(&mut buffer, true)?;
+    }
+    Ok(buffer.position().saturating_sub(header_size))
+}
+
+#[binrw]
+#[derive(Debug, Serialize, Deserialize)]
+#[brw(magic = b"TEST")]
+#[bw(import_raw(compute: bool))]
+pub(crate) struct Test {
+    #[bw(try_calc=compute_size(self, 8, compute)?.try_into())]
+    pub size: u32,
+    #[bw(try_calc=data.len().try_into())]
+    pub n: u32,
+    #[br(count=n)]
+    pub data: Vec<[f32; 3]>,
 }
