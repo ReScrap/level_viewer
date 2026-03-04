@@ -276,79 +276,79 @@ fn main() -> Result<()> {
     //     }
     // return Ok(());
     // }
-    {
-        let mut total = 0;
-        let mut failed = 0;
-        'outer: for entry in fs.entries()? {
-            if [".cm3",".sm3",".emi",".dum",".amc"].iter().any(|e| entry.path.ends_with(e)) {
-                total += 1;
-                let data = match fs.parse_file(&entry.path) {
-                    Ok(data) => data,
-                    Err(err) => {
-                        println!("Fail: {}: {:#}", entry.path, err);
-                        failed += 1;
-                        continue;
-                    }
-                };
-                if let Some(ani) = match data {
-                    ParsedData::Data(Data::CM3(CM3 {
-                        scene: parser::SCN { ref ani, .. },
-                        ..
-                    })) => ani,
-                    ParsedData::Data(Data::SM3(SM3 {
-                        scene: parser::SCN { ref ani, .. },
-                        ..
-                    })) => ani,
-                    _ => {
-                        continue;
-                    }
-                }
-                .get()
-                {
-                    for track in ani.track_map.iter().filter_map(|v| *v) {
-                        if ani.get_track(track as usize).is_err() {
-                            println!("Fail: {}", entry.path);
-                            failed += 1;
-                            continue 'outer;
-                        }
-                    }
-                }
-            }
-        }
-        println!("CM3/SM3/EMI/DUM/AMC Parser: {}/{} OK", total - failed, total);
-        return Ok(());
-    }
-    {
-        let mut dump_map: HashMap<String, HashMap<String, AnimTracks>> = HashMap::default();
-        for entry in fs.entries()? {
-            let parts: Vec<&str> = entry.path.split('/').filter(|s| !s.is_empty()).collect();
-            if parts.len() > 4
-                && parts[0] == "levels"
-                && parts[2] == "map"
-                && parts
-                    .last()
-                    .map(|p| p.ends_with("play.cm3"))
-                    .unwrap_or(false)
-            {
-                let anm_name = format!("{}anm", parts[3]);
-                if anm_name == parts[4] {
-                    let level = parts[1];
-                    let anm = parts[3];
-                    let scene_path = ["levels", level, "map", anm, &format!("{anm}.sm3")].join("/");
-                    println!("{level}: {anm}");
-                    let exists = fs.exists(&scene_path).unwrap_or(false);
-                    println!("{entry} -> {scene_path}: {exists}", entry = &entry.path,);
-                    dump_map.insert(
-                        entry.path.to_owned(),
-                        dump_ani(&fs, &scene_path, &entry.path)?,
-                    );
-                }
-            }
-        }
-        let mut fh = BufWriter::new(fs_err::File::create("anim.json")?);
-        serde_json::to_writer(&mut fh, &dump_map)?;
-        return Ok(());
-    }
+    // {
+    //     let mut total = 0;
+    //     let mut failed = 0;
+    //     'outer: for entry in fs.entries()? {
+    //         if [".cm3",".sm3",".emi",".dum",".amc"].iter().any(|e| entry.path.ends_with(e)) {
+    //             total += 1;
+    //             let data = match fs.parse_file(&entry.path) {
+    //                 Ok(data) => data,
+    //                 Err(err) => {
+    //                     println!("Fail: {}: {:#}", entry.path, err);
+    //                     failed += 1;
+    //                     continue;
+    //                 }
+    //             };
+    //             if let Some(ani) = match data {
+    //                 ParsedData::Data(Data::CM3(CM3 {
+    //                     scene: parser::SCN { ref ani, .. },
+    //                     ..
+    //                 })) => ani,
+    //                 ParsedData::Data(Data::SM3(SM3 {
+    //                     scene: parser::SCN { ref ani, .. },
+    //                     ..
+    //                 })) => ani,
+    //                 _ => {
+    //                     continue;
+    //                 }
+    //             }
+    //             .get()
+    //             {
+    //                 for track in ani.track_map.iter().filter_map(|v| *v) {
+    //                     if ani.get_track(track as usize).is_err() {
+    //                         println!("Fail: {}", entry.path);
+    //                         failed += 1;
+    //                         continue 'outer;
+    //                     }
+    //                 }
+    //             }
+    //         }
+    //     }
+    //     println!("CM3/SM3/EMI/DUM/AMC Parser: {}/{} OK", total - failed, total);
+    //     return Ok(());
+    // }
+    // {
+    //     let mut dump_map: HashMap<String, HashMap<String, AnimTracks>> = HashMap::default();
+    //     for entry in fs.entries()? {
+    //         let parts: Vec<&str> = entry.path.split('/').filter(|s| !s.is_empty()).collect();
+    //         if parts.len() > 4
+    //             && parts[0] == "levels"
+    //             && parts[2] == "map"
+    //             && parts
+    //                 .last()
+    //                 .map(|p| p.ends_with("play.cm3"))
+    //                 .unwrap_or(false)
+    //         {
+    //             let anm_name = format!("{}anm", parts[3]);
+    //             if anm_name == parts[4] {
+    //                 let level = parts[1];
+    //                 let anm = parts[3];
+    //                 let scene_path = ["levels", level, "map", anm, &format!("{anm}.sm3")].join("/");
+    //                 println!("{level}: {anm}");
+    //                 let exists = fs.exists(&scene_path).unwrap_or(false);
+    //                 println!("{entry} -> {scene_path}: {exists}", entry = &entry.path,);
+    //                 dump_map.insert(
+    //                     entry.path.to_owned(),
+    //                     dump_ani(&fs, &scene_path, &entry.path)?,
+    //                 );
+    //             }
+    //         }
+    //     }
+    //     let mut fh = BufWriter::new(fs_err::File::create("anim.json")?);
+    //     serde_json::to_writer(&mut fh, &dump_map)?;
+    //     return Ok(());
+    // }
     {
         let mut track_map: HashMap<&str, AnimTracks> = HashMap::new();
         let model = "/levels/fake/map/fake2/fake2.sm3";
@@ -376,8 +376,8 @@ fn main() -> Result<()> {
                 }
             }
         }
-        let mut fh = BufWriter::new(fs_err::File::create("dump.json")?);
-        serde_json::to_writer(&mut fh, &track_map)?;
+        // let mut fh = BufWriter::new(fs_err::File::create("dump.json")?);
+        // serde_json::to_writer(&mut fh, &track_map)?;
         return Ok(());
     }
     let state = State {
@@ -399,7 +399,7 @@ fn main() -> Result<()> {
         export: false,
     };
     let mut app = App::new();
-    app.insert_resource(AmbientLight { ..default() })
+    app.insert_resource(GlobalAmbientLight { ..default() })
         .insert_resource(WireframeConfig {
             global: false,
             default_color: Color::WHITE,
@@ -1024,7 +1024,7 @@ fn load_level(
     mut fog: &mut DistanceFog,
     mut images: ResMut<Assets<Image>>,
     ass: ResMut<AssetServer>,
-    mut amb: ResMut<AmbientLight>,
+    mut amb: ResMut<GlobalAmbientLight>,
     mut meshes: ResMut<Assets<Mesh>>,
     material_res: ResMut<Assets<ScrapMaterial>>,
 ) -> [f32; 3] {
@@ -1122,7 +1122,7 @@ fn load_level(
             };
             eprintln!("Node: {props:#?}", props = props.get_map_ref());
         }
-        *amb = AmbientLight {
+        *amb = GlobalAmbientLight {
             color: {
                 let col = &sm3.scene.ambient;
                 Srgba::from_u8_array_no_alpha([col.color.r, col.color.g, col.color.b]).into()
@@ -1572,7 +1572,7 @@ fn mesh_clicked(
         .entity(ent)
         .insert(Wireframe)
         .insert(WireframeColor {
-            color: Oklcha::sequential_dispersed(ent.index()).into(),
+            color: Oklcha::sequential_dispersed(ent.index().index()).into(),
         });
     Ok(())
 }
@@ -2459,7 +2459,7 @@ fn browser(
     mut state: ResMut<State>,
     mut ass: ResMut<AssetServer>,
     mut meshes: ResMut<Assets<Mesh>>,
-    mut amb: ResMut<AmbientLight>,
+    mut amb: ResMut<GlobalAmbientLight>,
     mut materials: ResMut<Assets<ScrapMaterial>>,
     mut cam: Query<(
         &mut Camera,

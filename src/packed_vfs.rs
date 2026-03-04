@@ -1,14 +1,13 @@
 use std::{
     collections::{HashMap, VecDeque},
     fs::File,
-    io::{Cursor, Read, Seek},
+    io::{Cursor, Read, Seek, SeekFrom},
     ops::Range,
     path::{Path, PathBuf},
     sync::Arc,
 };
-
 use color_eyre::eyre::{Context, Result, anyhow, bail};
-use bevy::{asset::io::AsyncSeekForward, tasks::futures_lite::AsyncRead};
+use bevy::tasks::futures_lite::{AsyncRead, AsyncSeek};
 use binrw::{BinReaderExt, io::BufReader};
 use fs_err as fs;
 use memmap2::Mmap;
@@ -227,20 +226,22 @@ impl AsyncRead for FileHandle {
     }
 }
 
-impl AsyncSeekForward for FileHandle {
-    fn poll_seek_forward(
+impl AsyncSeek for FileHandle {
+    fn poll_seek(
         self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
-        offset: u64,
+        pos: SeekFrom,
     ) -> std::task::Poll<std::io::Result<u64>> {
         let fh = self.get_mut();
-        std::task::Poll::Ready(fh.cursor.seek(std::io::SeekFrom::Current(
-            offset.try_into().map_err(|e| std::io::Error::other(e))?,
-        )))
+        std::task::Poll::Ready(fh.cursor.seek(pos))
     }
 }
 
-impl bevy::asset::io::Reader for FileHandle {}
+impl bevy::asset::io::Reader for FileHandle {
+    fn seekable(&mut self) -> std::result::Result<&mut dyn bevy::asset::io::SeekableReader, bevy::asset::io::ReaderNotSeekableError> {
+        Ok(self)
+    }
+}
 
 impl FileSystem for MultiPack {
     fn read_dir(&self, path: &str) -> vfs::VfsResult<Box<dyn Iterator<Item = String> + Send>> {

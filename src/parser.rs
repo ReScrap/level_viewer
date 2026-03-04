@@ -47,24 +47,6 @@ pub(crate) struct PackedHeader {
 
 #[binread]
 #[derive(Serialize, Debug)]
-#[br(import(msg: &'static str))]
-pub(crate) struct Unparsed<const SIZE: u64> {
-    #[br(count=SIZE, try_map=|data: Vec<u8>| Err(anyhow!("Unparsed data: {}\n{}", msg, rhexdumps!(data))))]
-    data: (),
-}
-
-#[binread]
-#[derive(Serialize, Debug)]
-pub(crate) struct RawTable<const SIZE: u32> {
-    num_entries: u32,
-    #[br(assert(entry_size==SIZE))]
-    entry_size: u32,
-    #[br(count=num_entries, args {inner: args!{count: entry_size.try_into().unwrap()}})]
-    pub data: Vec<Vec<u8>>,
-}
-
-#[binread]
-#[derive(Serialize, Debug)]
 pub(crate) struct Table<const SIZE: u32, T: for<'a> BinRead<Args<'a> = ()> + 'static> {
     num_entries: u32,
     #[br(assert(entry_size==SIZE))]
@@ -115,16 +97,6 @@ impl<T: for<'a> BinRead<Args<'a> = ()> + Serialize> Serialize for Optional<T> {
     {
         self.value.serialize(serializer)
     }
-}
-
-#[binread]
-#[derive(Serialize, Debug)]
-pub(crate) struct Chunk {
-    #[br(map=|c:[u8;4]| c.into_iter().map(|v| v as char).collect())]
-    magic: Vec<char>,
-    size: u32,
-    #[br(temp,count=size)]
-    _data: Vec<u8>,
 }
 
 #[binread]
@@ -181,12 +153,13 @@ pub(crate) struct IniSection {
     pub sections: Vec<PascalString>,
 }
 
+/// Configuration data
 #[binread]
 #[br(magic = b"INI\0")]
 #[derive(Debug)]
 pub(crate) struct INI {
     #[br(temp)]
-    _size: u32,
+    size: u32,
     #[br(temp)]
     num_sections: u32,
     #[br(count=num_sections)]
@@ -896,6 +869,17 @@ pub(crate) struct BlockInfo {
     pub track_type: AniTrackType,
 }
 
+
+#[derive(Debug, Default, Serialize)]
+pub(crate) struct AnimFrame {
+    pub pos: Option<[f32; 3]>,
+    pub rot: Option<[f32; 4]>,
+    pub fov: Option<f32>,
+    pub color: Option<[u8; 4]>,
+    pub intensity: Option<f32>,
+    pub visibility: Option<bool>,
+}
+
 #[derive(Debug, Default, Serialize)]
 pub(crate) struct AnimTracks {
     pub pos: Option<Vec<[f32; 3]>>,
@@ -904,6 +888,19 @@ pub(crate) struct AnimTracks {
     pub color: Option<Vec<[u8; 4]>>,
     pub intensity: Option<Vec<f32>>,
     pub visibility: Option<Vec<bool>>,
+}
+
+impl AnimTracks {
+    pub(crate) fn get_frame(&self, frame: usize) -> Option<AnimFrame> {
+        Some(AnimFrame {
+            pos: self.pos.as_ref().and_then(|v| v.get(frame).copied()),
+            rot: self.rot.as_ref().and_then(|v| v.get(frame).copied()),
+            fov: self.fov.as_ref().and_then(|v| v.get(frame).copied()),
+            color: self.color.as_ref().and_then(|v| v.get(frame).copied()),
+            intensity: self.intensity.as_ref().and_then(|v| v.get(frame).copied()),
+            visibility: self.visibility.as_ref().and_then(|v| v.get(frame).copied()),
+        })
+    }
 }
 
 fn parse_track_data<T>(data: &[u8]) -> Result<Vec<T>>
