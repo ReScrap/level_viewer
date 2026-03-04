@@ -10,7 +10,7 @@ use std::{
 
 use bilge::prelude::*;
 use binrw::{args, helpers::until_exclusive, meta::WriteEndian, prelude::*};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Utc, naive::serde::ts_microseconds_option::deserialize};
 use color_eyre::eyre::{Context, Result, anyhow, bail};
 use configparser::ini::{Ini, IniDefault};
 use enum_iterator::Sequence;
@@ -72,7 +72,7 @@ pub(crate) struct Table<
 
 #[binrw]
 #[bw(import_raw(compute: bool))]
-#[derive(Clone, Deserialize)]
+#[derive(Clone)]
 pub(crate) struct Optional<T: for<'a> BinRead<Args<'a> = ()> + for<'a> BinWrite<Args<'a> = bool>> {
     #[br(temp)]
     #[bw(calc = u32::from(value.is_some()))]
@@ -121,6 +121,19 @@ impl<T: for<'a> BinRead<Args<'a> = ()> + for<'a> BinWrite<Args<'a> = bool> + Ser
     }
 }
 
+impl<'de, T> Deserialize<'de> for Optional<T>
+where
+    T: Deserialize<'de> + for<'a> BinRead<Args<'a> = ()> + for<'a> BinWrite<Args<'a> = bool>,
+{
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = Option::<T>::deserialize(deserializer)?;
+        Ok(Optional { value })
+    }
+}
+
 fn encode_pascal_string(string: &str) -> Vec<u8> {
     if string.is_empty() {
         return vec![];
@@ -157,6 +170,12 @@ mod string_encoding_tests {
     fn pascal_string_encoding_does_not_utf8_expand() {
         let encoded = encode_pascal_string("Señor\0");
         assert_eq!(encoded, b"Se\xF1or\0");
+    }
+
+    #[test]
+    fn empty_pascal_string_encodes_as_single_nul() {
+        let encoded = encode_pascal_string("");
+        assert_eq!(encoded, Vec::<u8>::new());
     }
 }
 
@@ -231,7 +250,7 @@ pub(crate) struct IniSection {
 #[binrw]
 #[brw(magic = b"INI\0")]
 #[bw(import_raw(compute: bool))]
-#[derive(Debug, Deserialize)]
+#[derive(Debug)]
 pub(crate) struct INI {
     #[br(temp)]
     #[bw(try_calc = compute_size(self, 8, compute)?.try_into())]
@@ -266,29 +285,272 @@ impl std::fmt::Display for INI {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         for section in &self.sections {
             for line in &section.sections {
-                writeln!(f, "{}", line.string.trim_end_matches('\n'))?;
+                writeln!(f, "{}", line.string.trim_end_matches(['\n', '\0']))?;
             }
         }
         Ok(())
     }
 }
 
+const EMPTY_LINE_KEY_PREFIX: &str = "\u{0}__EMPTY_LINE__";
+
 impl Serialize for INI {
     fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
     {
-        use serde::ser::Error;
-        let blocks: Vec<String> = self
+        let mut out: IniData = IndexMap::new();
+        let mut section_name = String::new();
+        let mut empty_line_idx = 0u32;
+
+        for line in self
             .sections
             .iter()
-            .flat_map(|s| s.sections.iter())
-            .map(|s| s.string.clone())
+            .flat_map(|section| section.sections.iter())
+        {
+            let line = line.string.trim_end_matches(['\r', '\n', '\0']);
+
+            if line.starts_with('[') && line.ends_with(']') && line.len() >= 2 {
+                section_name = line[1..line.len() - 1].to_owned();
+                out.entry(section_name.clone()).or_default();
+                empty_line_idx = 0;
+                continue;
+            }
+            if line.is_empty() {
+                let section = out.entry(section_name.clone()).or_default();
+                section.insert(format!("{EMPTY_LINE_KEY_PREFIX}{empty_line_idx}"), None);
+                empty_line_idx += 1;
+                continue;
+            }
+
+            let section = out.entry(section_name.clone()).or_default();
+            if let Some((key, value)) = line.split_once('=') {
+                section.insert(key.to_owned(), Some(value.to_owned()));
+            } else {
+                section.insert(line.to_owned(), None);
+            }
+        }
+
+        out.serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for INI {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let map = IniData::deserialize(deserializer)?;
+        let mut lines = Vec::new();
+
+        for (section, values) in map {
+            if !section.is_empty() {
+                lines.push(PascalString {
+                    string: format!("[{section}]"),
+                });
+            }
+
+            for (key, value) in values {
+                if value.is_none() && key.starts_with(EMPTY_LINE_KEY_PREFIX) {
+                    lines.push(PascalString {
+                        // INI empty lines are encoded as an explicit NUL-terminated empty string.
+                        string: "\0".to_owned(),
+                    });
+                    continue;
+                }
+                let string = match value {
+                    Some(value) => format!("{key}={value}"),
+                    None => key,
+                };
+                lines.push(PascalString { string });
+            }
+        }
+
+        Ok(Self {
+            sections: vec![IniSection { sections: lines }],
+        })
+    }
+}
+
+#[cfg(test)]
+mod ini_roundtrip_tests {
+    use super::{EMPTY_LINE_KEY_PREFIX, INI, IniSection, PascalString};
+
+    #[test]
+    fn ini_serializes_to_hashmap_with_empty_default_section() {
+        let ini = INI {
+            sections: vec![
+                IniSection {
+                    sections: vec![PascalString {
+                        string: "  MiXeDKey  =  Value  ".to_owned(),
+                    }],
+                },
+                IniSection {
+                    sections: vec![
+                        PascalString {
+                            string: "[MiXeDSection]".to_owned(),
+                        },
+                        PascalString {
+                            string: "  MiXeDKey  =  Other  ".to_owned(),
+                        },
+                    ],
+                },
+            ],
+        };
+
+        let value = serde_json::to_value(&ini).unwrap();
+        let obj = value.as_object().unwrap();
+
+        assert!(obj.contains_key(""));
+        assert!(obj.contains_key("MiXeDSection"));
+        assert_eq!(obj[""]["  MiXeDKey  "], "  Value  ");
+        assert_eq!(obj["MiXeDSection"]["  MiXeDKey  "], "  Other  ");
+    }
+
+    #[test]
+    fn ini_deserializes_hashmap_with_empty_default_section() {
+        let json = r#"{
+            "": { "KeyA": "ValA", "FlagOnly": null },
+            "SectionB": { "KeyB": "ValB" }
+        }"#;
+        let ini: INI = serde_json::from_str(json).unwrap();
+        let lines: Vec<&str> = ini.sections[0]
+            .sections
+            .iter()
+            .map(|line| line.string.as_str())
             .collect();
-        Ini::new()
-            .read(blocks.join("\n"))
-            .map_err(Error::custom)?
-            .serialize(serializer)
+
+        assert!(lines.contains(&"KeyA=ValA"));
+        assert!(lines.contains(&"FlagOnly"));
+        assert!(lines.contains(&"[SectionB]"));
+        assert!(lines.contains(&"KeyB=ValB"));
+    }
+
+    #[test]
+    fn ini_serialization_preserves_section_and_key_order() {
+        let ini = INI {
+            sections: vec![IniSection {
+                sections: vec![
+                    PascalString {
+                        string: "k0=v0".to_owned(),
+                    },
+                    PascalString {
+                        string: "[Zeta]".to_owned(),
+                    },
+                    PascalString {
+                        string: "a=A".to_owned(),
+                    },
+                    PascalString {
+                        string: "b=B".to_owned(),
+                    },
+                    PascalString {
+                        string: "[Alpha]".to_owned(),
+                    },
+                    PascalString {
+                        string: "x=X".to_owned(),
+                    },
+                    PascalString {
+                        string: "y=Y".to_owned(),
+                    },
+                ],
+            }],
+        };
+
+        let value = serde_json::to_value(&ini).unwrap();
+        let obj = value.as_object().unwrap();
+        let sections: Vec<&str> = obj.keys().map(|k| k.as_str()).collect();
+        assert_eq!(sections, vec!["", "Zeta", "Alpha"]);
+
+        let default_keys: Vec<&str> = obj[""]
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(|k| k.as_str())
+            .collect();
+        let zeta_keys: Vec<&str> = obj["Zeta"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(|k| k.as_str())
+            .collect();
+        let alpha_keys: Vec<&str> = obj["Alpha"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(|k| k.as_str())
+            .collect();
+        assert_eq!(default_keys, vec!["k0"]);
+        assert_eq!(zeta_keys, vec!["a", "b"]);
+        assert_eq!(alpha_keys, vec!["x", "y"]);
+    }
+
+    #[test]
+    fn ini_deserialization_preserves_section_and_key_order() {
+        let json = r#"{
+            "": { "first": "1", "second": "2" },
+            "Zeta": { "a": "A", "b": "B" },
+            "Alpha": { "x": "X", "y": "Y" }
+        }"#;
+        let ini: INI = serde_json::from_str(json).unwrap();
+        let lines: Vec<&str> = ini.sections[0]
+            .sections
+            .iter()
+            .map(|line| line.string.as_str())
+            .collect();
+
+        assert_eq!(
+            lines,
+            vec![
+                "first=1", "second=2", "[Zeta]", "a=A", "b=B", "[Alpha]", "x=X", "y=Y"
+            ]
+        );
+    }
+
+    #[test]
+    fn ini_serialization_preserves_empty_lines_with_markers() {
+        let ini = INI {
+            sections: vec![IniSection {
+                sections: vec![
+                    PascalString {
+                        string: "a=1".to_owned(),
+                    },
+                    PascalString {
+                        string: String::new(),
+                    },
+                    PascalString {
+                        string: "b=2".to_owned(),
+                    },
+                ],
+            }],
+        };
+
+        let value = serde_json::to_value(&ini).unwrap();
+        let obj = value[""].as_object().unwrap();
+        let keys: Vec<&str> = obj.keys().map(|k| k.as_str()).collect();
+        assert_eq!(keys, vec!["a", &format!("{EMPTY_LINE_KEY_PREFIX}0"), "b"]);
+        assert_eq!(
+            obj[&format!("{EMPTY_LINE_KEY_PREFIX}0")],
+            serde_json::Value::Null
+        );
+    }
+
+    #[test]
+    fn ini_deserialization_restores_empty_lines_from_markers() {
+        let mut section = serde_json::Map::new();
+        section.insert("a".to_owned(), serde_json::Value::String("1".to_owned()));
+        section.insert(format!("{EMPTY_LINE_KEY_PREFIX}0"), serde_json::Value::Null);
+        section.insert("b".to_owned(), serde_json::Value::String("2".to_owned()));
+        let mut root = serde_json::Map::new();
+        root.insert("".to_owned(), serde_json::Value::Object(section));
+
+        let ini: INI = serde_json::from_value(serde_json::Value::Object(root)).unwrap();
+        let lines: Vec<&str> = ini.sections[0]
+            .sections
+            .iter()
+            .map(|line| line.string.as_str())
+            .collect();
+
+        assert_eq!(lines, vec!["a=1", "\0", "b=2"]);
     }
 }
 
@@ -361,7 +623,9 @@ pub(crate) enum Pos {
 }
 
 #[bitsize(32)]
-#[derive(DebugBits, Serialize, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, TryFromBits, Deserialize)]
+#[derive(
+    DebugBits, Serialize, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, TryFromBits, Deserialize,
+)]
 pub(crate) struct FVF {
     reserved: bool,
     pub pos: Pos,
@@ -859,7 +1123,19 @@ fn encode_texture_type(value: &TextureType) -> u8 {
 #[binrw]
 #[brw(repr=u32)]
 #[repr(u32)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Sequence, Serialize, ToPrimitive, Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Sequence,
+    Serialize,
+    ToPrimitive,
+    Deserialize,
+)]
 
 pub(crate) enum BlendMode {
     Zero = 1,
@@ -880,7 +1156,19 @@ pub(crate) enum BlendMode {
 #[binrw]
 #[brw(repr=u32)]
 #[repr(u32)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Sequence, Serialize, ToPrimitive, Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Sequence,
+    Serialize,
+    ToPrimitive,
+    Deserialize,
+)]
 pub(crate) enum CmpFunc {
     Never = 1,
     Less = 2,
@@ -897,7 +1185,9 @@ pub(crate) enum CmpFunc {
     BothInvSrcAlpha = 13,
 }
 
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Sequence, Serialize, ToPrimitive, Clone, Deserialize)]
+#[derive(
+    Debug, PartialEq, Eq, PartialOrd, Ord, Sequence, Serialize, ToPrimitive, Clone, Deserialize,
+)]
 #[repr(u8)]
 pub(crate) enum MatPropAttrib {
     NO_COLLID = 0,
@@ -1078,7 +1368,19 @@ pub(crate) struct EVA {
     verts: Vec<Optional<VertexAnim>>,
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Sequence, Serialize, ToPrimitive, Deserialize)]
+#[derive(
+    Debug,
+    Copy,
+    Clone,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Sequence,
+    Serialize,
+    ToPrimitive,
+    Deserialize,
+)]
 #[repr(u8)]
 pub(crate) enum AniTrackType {
     Position = 0,   // [f32;3]
