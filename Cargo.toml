@@ -69,7 +69,6 @@ bevy = { version = "0.15", default-features = false, features = [
 bevy_atmosphere = "0.12"
 bevy_egui = "0.31.1"
 bevy-inspector-egui = "0.28.1"
-bevy_mod_raycast = "0.18.0"
 smooth-bevy-cameras = "0.13.0"
 egui_file = "0.20.0"
 petgraph = "0.7.0"
