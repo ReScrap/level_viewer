@@ -759,7 +759,9 @@ pub(crate) struct MAP {
     pub is_env: u8,
     pub tile: u8,
     pub mirror: u8,
-    pub texture_type: u8,
+    #[br(map = parse_texture_type)]
+    #[bw(map = encode_texture_type)]
+    pub texture_type: TextureType,
     pub displacement: [f32; 2],
     pub scale: [f32; 2],
     pub quantity: f32, // Bumpmap scaling
@@ -769,6 +771,35 @@ pub(crate) struct MAP {
     #[br(if(version==3))]
     #[bw(if(*version==3))]
     pub angle: Option<f32>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub(crate) enum TextureType {
+    None,
+    FxLava,
+    FxScroll,
+    FxNewsPanel,
+    Unknown(u8),
+}
+
+fn parse_texture_type(value: u8) -> TextureType {
+    match value {
+        0 => TextureType::None,
+        1 => TextureType::FxLava,
+        2 => TextureType::FxScroll,
+        3 => TextureType::FxNewsPanel,
+        other => TextureType::Unknown(other),
+    }
+}
+
+fn encode_texture_type(value: &TextureType) -> u8 {
+    match value {
+        TextureType::None => 0,
+        TextureType::FxLava => 1,
+        TextureType::FxScroll => 2,
+        TextureType::FxNewsPanel => 3,
+        TextureType::Unknown(other) => *other,
+    }
 }
 
 #[binrw]
