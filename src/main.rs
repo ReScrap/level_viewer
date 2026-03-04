@@ -2365,10 +2365,14 @@ fn load_sm3(
         if let Some(NodeData::D3DMesh(mesh)) = node.content.get()
             && let Some(mat) = mesh_materials.get(&(mesh.mat_index as usize)) {
                 for e in &ent {
+                    let scrap_mat = ExtendedMaterial {
+                        base: mat.clone(),
+                        extension: TestMaterial::default(),
+                    };
                     commands
                         .entity(*e)
-                        .remove::<MeshMaterial3d<StandardMaterial>>()
-                        .insert(MeshMaterial3d(ass.add(mat.clone())));
+                        .remove::<MeshMaterial3d<ScrapMaterial>>()
+                        .insert(MeshMaterial3d(ass.add(scrap_mat)));
                 }
             }
         ents.insert(node_name, (node, ent));
