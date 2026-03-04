@@ -69,6 +69,7 @@
 
         <Package Id='*'
             Keywords='Installer'
+            Description='A level viewer for the game American McGee&#39;s Scrapland'
             Manufacturer='Earthnuker'
             InstallerVersion='450'
             Languages='1033'
