@@ -129,15 +129,19 @@ type AnimMat = HashMap<u32, Vec<(Slot, f32, Vec<Handle<Image>>)>>;
 #[derive(Resource, Debug)]
 struct State {
     fs: MultiPackFS,
+    browser_tree: Option<BrowserTreeNode>,
+    browser_tree_error: Option<String>,
     af_decay: f32,
     data_path: Option<String>,
     data: Option<ParsedData>,
     picked_object: Option<Entity>,
     show_ui: bool,
+    show_browser_panel: bool,
     show_nodes: bool,
     show_collision: bool,
     lightmaps: bool,
     cam_physics: bool,
+    cam_auto_level: bool,
     node_size: f32,
     thrust_power: f32,
     lightmap_exposure: f32,
@@ -349,133 +353,126 @@ fn main() -> Result<()> {
     //     }
     // return Ok(());
     // // }
-    {
-        let mut total = 0;
-        let mut failed = 0;
-        let mut fail_match = 0;
-        let mut max_diff = 0;
-        'outer: for entry in fs.entries()? {
-            if [".cm3", ".sm3", ".emi", ".dum", ".amc"]
-                .iter()
-                .any(|e| entry.path.ends_with(e))
-            {
-                total += 1;
-                let data = match fs.parse_file(&entry.path) {
-                    Ok(data) => data,
-                    Err(err) => {
-                        println!("Fail: {}: {:#}", entry.path, err);
-                        failed += 1;
-                        continue;
-                    }
-                };
-                let ani = match data {
-                    ParsedData::Data(Data::CM3(CM3 {
-                        scene: parser::SCN { ref ani, .. },
-                        ..
-                    }))
-                    | ParsedData::Data(Data::SM3(SM3 {
-                        scene: parser::SCN { ref ani, .. },
-                        ..
-                    })) => ani.get(),
-                    _ => {
-                        continue;
-                    }
-                };
-                if let Some(ani) = ani {
-                    for track in ani.track_map.iter().filter_map(|v| *v) {
-                        if ani.get_track(track as usize).is_err() {
-                            println!("Fail: {}", entry.path);
-                            failed += 1;
-                            continue 'outer;
-                        }
-                    }
-                };
-                let ParsedData::Data(data) = data else {
-                    continue;
-                };
-                let data = serde_json::to_string_pretty(&data)?;
-                let jd = &mut serde_json::Deserializer::from_str(&data);
-                let data: Data = match serde_path_to_error::deserialize(jd) {
-                    Ok(data) => data,
-                    Err(err) => {
-                        let col = err.inner().column();
-                        let line = err.inner().line();
-                        eprintln!(
-                            "{} JSON_ROUNDTRIP_FAIL [{} {}:{}]: {}",
-                            entry.path,
-                            err.path(),
-                            line,
-                            col,
-                            err
-                        );
-                        if err.path().to_string() == "." {
-                            let suspects = find_numeric_null_candidates(&data, 16);
-                            if !suspects.is_empty() {
-                                eprintln!(
-                                    "{} JSON_ROUNDTRIP_SUSPECT_PATHS: {}",
-                                    entry.path,
-                                    suspects.join(", ")
-                                );
-                            }
-                        }
-                        std::fs::write("roundtrip_error.json", &data)?;
-                        fail_match += 1;
-                        continue;
-                    }
-                };
-                let mut orig_bytes = Vec::new();
-                let mut orig_file = fs.open_file(&entry.path).unwrap();
-                orig_file.read_to_end(&mut orig_bytes).unwrap();
-                let mut buffer = Cursor::new(Vec::new());
-                data.write_le(&mut buffer).unwrap();
-                let buffer = buffer.into_inner();
-                if buffer.len() != orig_bytes.len() {
-                    eprintln!(
-                        "{} LEN_MISMATCH: {} vs {}",
-                        entry.path,
-                        buffer.len(),
-                        orig_bytes.len()
-                    );
-                    let diff = buffer.len().abs_diff(orig_bytes.len());
-                    if diff > max_diff {
-                        std::fs::write("orig.bin", &orig_bytes)?;
-                        std::fs::write("buffer.bin", &buffer)?;
-                        max_diff = diff;
-                    }
-                    fail_match += 1;
-                    continue;
-                }
-                if buffer != orig_bytes {
-                    let first_diff = buffer
-                        .iter()
-                        .zip(orig_bytes.iter())
-                        .take_while(|(a, b)| a == b)
-                        .count();
-                    println!(
-                        "{path} @ {first_diff} ({buf_len} vs {orig_len})",
-                        path = entry.path,
-                        buf_len = buffer.len(),
-                        orig_len = orig_bytes.len()
-                    );
-                    let start = first_diff.saturating_sub(16);
-                    rhexdump!(&buffer[start..first_diff + 16], start as u64);
-                    rhexdump!(&orig_bytes[start..first_diff + 16], start as u64);
-                    std::fs::write("orig.bin", &orig_bytes)?;
-                    std::fs::write("buffer.bin", &buffer)?;
-                    // std::process::exit(1);
-                    fail_match += 1;
-                    continue;
-                };
-            }
-        }
-        println!(
-            "CM3/SM3/EMI/DUM/AMC Parser: {}/{} parsed OK, {} failed to reconstruct",
-            total - failed,
-            total,
-            fail_match
-        );
-        return Ok(());
-    }
+    // {
+    //     let mut total = 0;
+    //     let mut failed = 0;
+    //     let mut fail_match = 0;
+    //     let mut max_diff = 0;
+    //     'outer: for entry in fs.entries()? {
+    //         if [".cm3", ".sm3", ".emi", ".dum", ".amc"]
+    //             .iter()
+    //             .any(|e| entry.path.ends_with(e))
+    //         {
+    //             total += 1;
+    //             let data = match fs.parse_file(&entry.path) {
+    //                 Ok(data) => data,
+    //                 Err(err) => {
+    //                     println!("Fail: {}: {:#}", entry.path, err);
+    //                     failed += 1;
+    //                     continue;
+    //                 }
+    //             };
+    //             let ani = match data {
+    //                 ParsedData::Data(Data::CM3(CM3 {
+    //                     scene: parser::SCN { ref ani, .. },
+    //                     ..
+    //                 }))
+    //                 | ParsedData::Data(Data::SM3(SM3 {
+    //                     scene: parser::SCN { ref ani, .. },
+    //                     ..
+    //                 })) => ani.get(),
+    //                 _ => {
+    //                     continue;
+    //                 }
+    //             };
+    //             if let Some(ani) = ani {
+    //                 for track in ani.track_map.iter().filter_map(|v| *v) {
+    //                     if ani.get_track(track as usize).is_err() {
+    //                         println!("Fail: {}", entry.path);
+    //                         failed += 1;
+    //                         continue 'outer;
+    //                     }
+    //                 }
+    //             };
+    //             let ParsedData::Data(data) = data else {
+    //                 continue;
+    //             };
+    //             let data = serde_json::to_string_pretty(&data)?;
+    //             let jd = &mut serde_json::Deserializer::from_str(&data);
+    //             let data: Data = match serde_path_to_error::deserialize(jd) {
+    //                 Ok(data) => data,
+    //                 Err(err) => {
+    //                     let col = err.inner().column();
+    //                     let line = err.inner().line();
+    //                     eprintln!(
+    //                         "{} JSON_ROUNDTRIP_FAIL [{} {}:{}]: {}",
+    //                         entry.path,
+    //                         err.path(),
+    //                         line,
+    //                         col,
+    //                         err
+    //                     );
+    //                     if err.path().to_string() == "." {
+    //                         let suspects = find_numeric_null_candidates(&data, 16);
+    //                         if !suspects.is_empty() {
+    //                             eprintln!(
+    //                                 "{} JSON_ROUNDTRIP_SUSPECT_PATHS: {}",
+    //                                 entry.path,
+    //                                 suspects.join(", ")
+    //                             );
+    //                         }
+    //                     }
+    //                     std::fs::write("roundtrip_error.json", &data)?;
+    //                     fail_match += 1;
+    //                     continue;
+    //                 }
+    //             };
+    //             let mut orig_bytes = Vec::new();
+    //             let mut orig_file = fs.open_file(&entry.path).unwrap();
+    //             orig_file.read_to_end(&mut orig_bytes).unwrap();
+    //             let mut buffer = Cursor::new(Vec::new());
+    //             data.write_le(&mut buffer).unwrap();
+    //             let buffer = buffer.into_inner();
+    //             if buffer.len() != orig_bytes.len() {
+    //                 eprintln!(
+    //                     "{} LEN_MISMATCH: {} vs {}",
+    //                     entry.path,
+    //                     buffer.len(),
+    //                     orig_bytes.len()
+    //                 );
+    //                 fail_match += 1;
+    //                 continue;
+    //             }
+    //             if buffer != orig_bytes {
+    //                 let first_diff = buffer
+    //                     .iter()
+    //                     .zip(orig_bytes.iter())
+    //                     .take_while(|(a, b)| a == b)
+    //                     .count();
+    //                 println!(
+    //                     "{path} @ 0x{first_diff:x} (0x{buf_len:x} vs 0x{orig_len:x})",
+    //                     path = entry.path,
+    //                     buf_len = buffer.len(),
+    //                     orig_len = orig_bytes.len()
+    //                 );
+    //                 let start = first_diff.saturating_sub(16);
+    //                 rhexdump!(&buffer[start..first_diff + 16], start as u64);
+    //                 println!("---");
+    //                 rhexdump!(&orig_bytes[start..first_diff + 16], start as u64);
+    //                 // std::process::exit(1);
+    //                 fail_match += 1;
+    //                 continue;
+    //             };
+    //         }
+    //     }
+    //     println!(
+    //         "CM3/SM3/EMI/DUM/AMC Parser: {}/{} parsed OK, {} failed to reconstruct",
+    //         total - failed,
+    //         total,
+    //         fail_match
+    //     );
+    //     return Ok(());
+    // }
     // {
     //     let mut dump_map: HashMap<String, HashMap<String, AnimTracks>> = HashMap::default();
     //     for entry in fs.entries()? {
@@ -540,11 +537,15 @@ fn main() -> Result<()> {
     // }
     let state = State {
         fs,
+        browser_tree: None,
+        browser_tree_error: None,
         data_path: std::env::args().nth(1),
         picked_object: None,
         data: None,
         show_ui: true,
+        show_browser_panel: true,
         cam_physics: true,
+        cam_auto_level: true,
         lightmaps: true,
         show_nodes: false,
         show_collision: false,
@@ -2045,6 +2046,12 @@ fn keyboard_handler(
             KeyCode::F4 => {
                 state.show_nodes = !state.show_nodes;
             }
+            KeyCode::F5 => {
+                state.show_browser_panel = !state.show_browser_panel;
+            }
+            KeyCode::KeyF => {
+                state.cam_auto_level = !state.cam_auto_level;
+            }
             KeyCode::Delete => {
                 // if let Some(ent) = state.picked_object.take() {
                 //     commands.entity(ent).despawn();
@@ -2122,6 +2129,8 @@ fn help_window(
         ui.toggle_value(&mut state.show_ui, "Show UI [F1]");
         ui.toggle_value(&mut state.lightmaps, "Enable Lightmaps [F2]");
         ui.toggle_value(&mut wireframe.global, "Enable Wireframes [F3]");
+        ui.toggle_value(&mut state.cam_auto_level, "Camera Auto-Level [F]");
+        ui.toggle_value(&mut state.show_browser_panel, "Show Browser Panel [F5]");
         ui.horizontal(|ui| {
             ui.toggle_value(&mut state.show_nodes, "Show Nodes [F4]");
             if state.show_nodes {
@@ -2619,6 +2628,124 @@ struct Vec3f(f32, f32, f32);
 #[derive(Debug)]
 struct Vec4f(f32, f32, f32, f32);
 
+#[derive(Debug, Default)]
+struct BrowserTreeNode {
+    path: String,
+    is_file: bool,
+    is_level: bool,
+    children: BTreeMap<String, BrowserTreeNode>,
+}
+
+impl BrowserTreeNode {
+    fn insert(&mut self, full_path: &str, is_file: bool) {
+        let mut current = self;
+        let mut parts = full_path
+            .split('/')
+            .filter(|part| !part.is_empty())
+            .peekable();
+        while let Some(segment) = parts.next() {
+            let is_leaf = parts.peek().is_none();
+            let current_path = current.path.clone();
+            let next_path = if current_path.is_empty() {
+                segment.to_owned()
+            } else {
+                format!("{current_path}/{segment}")
+            };
+
+            let child = current
+                .children
+                .entry(segment.to_owned())
+                .or_insert_with(|| BrowserTreeNode {
+                    path: next_path,
+                    is_file: false,
+                    is_level: false,
+                    children: BTreeMap::new(),
+                });
+            if is_leaf {
+                child.is_file = is_file;
+            }
+            current = child;
+        }
+    }
+
+    fn annotate_levels(&mut self, fs: &MultiPackFS) -> Result<()> {
+        if !self.is_file && !self.path.is_empty() {
+            self.is_level = fs.is_level(Some(self.path.clone()))?;
+        }
+        for child in self.children.values_mut() {
+            child.annotate_levels(fs)?;
+        }
+        Ok(())
+    }
+}
+
+fn is_supported_browser_file(path: &str) -> bool {
+    let ext = path.rsplit('.').next().unwrap_or_default();
+    ext.eq_ignore_ascii_case("sm3")
+        || ext.eq_ignore_ascii_case("cm3")
+        || ext.eq_ignore_ascii_case("amc")
+}
+
+fn build_browser_tree(fs: &MultiPackFS) -> Result<BrowserTreeNode> {
+    let mut root = BrowserTreeNode::default();
+    for entry in fs.entries()? {
+        let path = entry.path.trim_matches('/');
+        if path.is_empty() {
+            continue;
+        }
+        root.insert(path, entry.is_file);
+    }
+    root.annotate_levels(fs)?;
+    Ok(root)
+}
+
+fn browser_text_color() -> egui::Color32 {
+    egui::Color32::from_rgb(188, 196, 206)
+}
+
+fn render_browser_tree_node(
+    ui: &mut egui::Ui,
+    name: &str,
+    node: &BrowserTreeNode,
+    selected_path: &mut Option<String>,
+) {
+    let text_color = browser_text_color();
+    if node.is_file {
+        if is_supported_browser_file(&node.path) {
+            if ui
+                .add(egui::Button::new(RichText::new(name).color(text_color)))
+                .clicked()
+            {
+                *selected_path = Some(node.path.clone());
+            }
+        } else {
+            ui.label(RichText::new(name).color(text_color));
+        }
+        return;
+    }
+
+    let tree = egui::CollapsingHeader::new(RichText::new(name).color(text_color))
+        .id_salt(("browser_node", node.path.as_str()))
+        .default_open(false)
+        .show(ui, |ui| {
+            for (child_name, child) in node.children.iter().filter(|(_, child)| !child.is_file) {
+                render_browser_tree_node(ui, child_name, child, selected_path);
+            }
+            for (child_name, child) in node.children.iter().filter(|(_, child)| child.is_file) {
+                render_browser_tree_node(ui, child_name, child, selected_path);
+            }
+        });
+
+    if node.is_level {
+        let should_load = tree.header_response.double_clicked();
+        tree.header_response
+            .on_hover_text("Double-click to load this level");
+        if should_load {
+            *selected_path = Some(node.path.clone());
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn browser(
     mut imgs: ResMut<Assets<Image>>,
@@ -2641,12 +2768,18 @@ fn browser(
     if let Some(data_path) = state.data_path.take() {
         match state.fs.parse_file(&data_path) {
             Ok(ParsedData::Level(level)) => {
+                for (ent, _, _) in &mesh {
+                    commands.entity(ent).despawn();
+                }
                 state.data = Some(ParsedData::Level(level));
                 let (_, mut fog, mut t, _) = cam.single_mut()?;
                 t.translation =
                     load_level(state, commands, &mut fog, imgs, ass, amb, meshes, materials).into();
             }
             Ok(ParsedData::Data(Data::SM3(sm3))) => {
+                for (ent, _, _) in &mesh {
+                    commands.entity(ent).despawn();
+                }
                 state.data = Some(ParsedData::Data(Data::SM3(sm3)));
                 load_sm3(state, commands, imgs, ass, meshes, materials);
             }
@@ -2680,61 +2813,90 @@ fn browser(
     if !state.show_ui {
         return Ok(());
     }
-    let mut cam = cam.single_mut()?;
-    let title = state
-        .fs
-        .pwd()
-        .map(|pwd| format!("Browser [{}]", pwd))
-        .unwrap_or_else(|_| "Browser".to_owned());
-    egui::Window::new(title).show(contexts.ctx_mut()?, |ui| {
-        let files = state.fs.ls();
-        if let Ok(files) = files {
-            ScrollArea::vertical().show(ui, |ui| {
-                if ui.button("..").clicked()
-                    && let Err(e) = state.fs.cd("..")
-                {
-                    error!("{e}");
-                };
-                for entry in &files {
-                    let path = entry.path.strip_prefix('/').unwrap_or(&entry.path);
-                    if ui.button(path).clicked()
-                        && let Err(e) = state.fs.cd(&entry.path)
-                    {
-                        error!("{e}");
-                    };
-                }
-                if state.fs.is_level(None).unwrap_or(false) {
-                    ui.separator();
-                    if ui.button(RichText::new("Load").heading()).clicked() {
-                        if let Ok(pwd) = state.fs.pwd() {
-                            println!("Loading {pwd}");
-                        }
-                        let path = state.fs.pwd().expect("Failed to get current directory");
-                        match state.fs.parse_file(&path) {
-                            Ok(ParsedData::Level(level)) => {
-                                state.data = Some(ParsedData::Level(level));
-                                for (ent, _, _) in &mesh {
-                                    commands.entity(ent).despawn();
-                                }
-                                let c = load_level(
-                                    state, commands, &mut cam.1, imgs, ass, amb, meshes, materials,
-                                );
-                                let mut t = cam.2;
-                                t.translation.x = c[0];
-                                t.translation.y = c[1];
-                                t.translation.z = c[2];
-                            }
-                            Err(e) => {
-                                print!("Error loading {path}: {e}");
-                            }
-                            _ => (),
-                        };
+
+    if state.show_browser_panel
+        && state.browser_tree.is_none()
+        && state.browser_tree_error.is_none()
+    {
+        match build_browser_tree(&state.fs) {
+            Ok(tree) => {
+                state.browser_tree = Some(tree);
+            }
+            Err(err) => {
+                state.browser_tree_error = Some(format!("{err:#}"));
+            }
+        }
+    }
+
+    let ctx = contexts.ctx_mut()?;
+    let mut selected_path = None;
+    let mut refresh_tree = false;
+    if state.show_browser_panel {
+        egui::SidePanel::left("file_browser_panel")
+            .resizable(true)
+            .default_width(320.0)
+            .min_width(240.0)
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.heading("File Browser");
+                    if ui.small_button("Refresh").clicked() {
+                        refresh_tree = true;
                     }
+                    if ui.small_button("Hide [F5]").clicked() {
+                        state.show_browser_panel = false;
+                    }
+                });
+                let text_color = browser_text_color();
+                ui.label(
+                    RichText::new("Double-click a level folder to load it.").color(text_color),
+                );
+                ui.label(RichText::new("Supported files: .sm3, .cm3, .amc").color(text_color));
+                ui.separator();
+
+                if let Some(root) = state.browser_tree.as_ref() {
+                    ScrollArea::vertical().show(ui, |ui| {
+                        for (child_name, child) in
+                            root.children.iter().filter(|(_, child)| !child.is_file)
+                        {
+                            render_browser_tree_node(ui, child_name, child, &mut selected_path);
+                        }
+                        for (child_name, child) in
+                            root.children.iter().filter(|(_, child)| child.is_file)
+                        {
+                            render_browser_tree_node(ui, child_name, child, &mut selected_path);
+                        }
+                    });
+                } else if let Some(err) = state.browser_tree_error.as_ref() {
+                    ui.colored_label(
+                        egui::Color32::from_rgb(220, 90, 90),
+                        format!("Failed to build tree: {err}"),
+                    );
+                } else {
+                    ui.label(RichText::new("Building file tree...").color(text_color));
                 }
             });
+    }
+
+    if refresh_tree {
+        state.browser_tree = None;
+        state.browser_tree_error = None;
+        if state.show_browser_panel {
+            match build_browser_tree(&state.fs) {
+                Ok(tree) => {
+                    state.browser_tree = Some(tree);
+                }
+                Err(err) => {
+                    state.browser_tree_error = Some(format!("{err:#}"));
+                }
+            }
         }
-    });
-    egui::Window::new("Export").show(contexts.ctx_mut()?, |ui| {
+    }
+
+    if let Some(path) = selected_path {
+        state.data_path = Some(path);
+    }
+
+    egui::Window::new("Export").show(ctx, |ui| {
         if ui.button("Export!").clicked() {
             state.export = true;
         }
@@ -2933,7 +3095,7 @@ impl DroneCam {
 
             // Auto-level only when the user is not actively rolling.
             // This keeps keyboard flight horizon-stable while still allowing full flips.
-            if roll_in.abs() < 0.05 {
+            if state.cam_auto_level && roll_in.abs() < 0.05 {
                 let level_lerp = 1.0 - (-0.8 * dt).exp();
                 let forward = *tran.forward();
                 let level_up = Vec3::Y - forward * Vec3::Y.dot(forward);
