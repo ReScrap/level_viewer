@@ -56,6 +56,9 @@ bevy = { version = "0.14", default-features = false, features = [
     "tga",
     "png",
     "bevy_gizmos",
+    "multi_threaded",
+    "tonemapping_luts",
+    "x11",
     # "dynamic_linking"
 ] }
 bevy_atmosphere = "0.10"
