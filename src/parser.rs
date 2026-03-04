@@ -1268,8 +1268,8 @@ pub(crate) struct ANI {
     #[bw(calc = 2u32)]
     version: u32,
     pub fps: f32,
-    pub first_frame: u32,
     pub last_frame: u32,
+    pub first_frame: u32,
     #[bw(try_calc = tracks.len().try_into())]
     pub num_objects: u32,
     is_active: u32,
