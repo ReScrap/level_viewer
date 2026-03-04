@@ -2,6 +2,12 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## 0.0.3 - 2024-07-11
+#### Build system
+- Add linux dependencies - (6c664e9) - Daniel Seiller
+
+- - -
+
 ## 0.0.2 - 2024-07-11
 #### Build system
 - Fix post-bump hook - (cce5831) - Daniel Seiller
