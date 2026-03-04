@@ -61,7 +61,7 @@
     <Product
         Id='*'
         Name='level_viewer'
-        UpgradeCode='C281C687-92B2-4DD0-B757-FA6CB11B151A'
+        UpgradeCode='4310959D-45C3-45D3-B8A0-3B36BFAFEF85'
         Manufacturer='Earthnuker'
         Language='1033'
         Codepage='1252'
@@ -110,7 +110,7 @@
                     -->
 
                     <Directory Id='Bin' Name='bin'>
-                        <Component Id='Path' Guid='A8728CA0-C308-4C48-AB79-47ADC765A5C5' KeyPath='yes'>
+                        <Component Id='Path' Guid='B9FD19DB-FADE-4BE5-BCCE-5AE3B34FD269' KeyPath='yes'>
                             <Environment
                                 Id='PATH'
                                 Name='PATH'

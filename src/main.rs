@@ -197,13 +197,14 @@ fn get_packed_files() -> Result<Vec<PathBuf>> {
                 .set_buttons(rfd::MessageButtons::Ok)
                 .set_level(rfd::MessageLevel::Warning)
                 .show();
-            loop {
-                if let Some(folder) = rfd::FileDialog::new()
+            {
+                let Some(folder) = rfd::FileDialog::new()
                     .set_title("Scrapland installation folder")
-                    .pick_folder()
+                    .pick_folder() else
                 {
-                    break folder;
-                }
+                    std::process::exit(1);
+                };
+                folder
             }
         }
     };
