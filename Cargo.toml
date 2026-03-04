@@ -50,11 +50,12 @@ steamlocate = "1.2.1"
 vfs = "0.12.0"
 walkdir = "2.5.0"
 # Bevy
-bevy = { version = "0.14", features = [
+bevy = { version = "0.14", default-features = false, features = [
     "bmp",
     "dds",
     "tga",
     "png",
+    "bevy_gizmos",
     # "dynamic_linking"
 ] }
 bevy_atmosphere = "0.10"
