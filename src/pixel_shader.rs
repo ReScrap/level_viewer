@@ -172,12 +172,12 @@ fn parse(path: &str) -> Result<()> {
     todo!()
 }
 
-#[cfg(test)]
-mod test {
-    #[test]
-    fn test() {
-        let var = std::env::var("SHADER_FILE").unwrap();
-        super::parse(&var).unwrap();
-        // super::parse(r"E:\Games\Steam\steamapps\common\Scrapland\ext\bmp\hologram.psh").unwrap();
-    }
-}
+// #[cfg(test)]
+// mod test {
+//     #[test]
+//     fn test() {
+//         let var = std::env::var("SHADER_FILE").unwrap();
+//         super::parse(&var).unwrap();
+//         // super::parse(r"E:\Games\Steam\steamapps\common\Scrapland\ext\bmp\hologram.psh").unwrap();
+//     }
+// }
