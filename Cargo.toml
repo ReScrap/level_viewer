@@ -1,14 +1,14 @@
 [package]
 authors = ["Earthnuker <earthnuker@gmail.com>"]
 name = "level_viewer"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 repository = "https://github.com/ReScrap/level_viewer"
 description = "A level viewer for the game American McGee's Scrapland"
 
 [package.metadata.wix]
-upgrade-guid = "C281C687-92B2-4DD0-B757-FA6CB11B151A"
-path-guid = "A8728CA0-C308-4C48-AB79-47ADC765A5C5"
+upgrade-guid = "4310959D-45C3-45D3-B8A0-3B36BFAFEF85"
+path-guid = "B9FD19DB-FADE-4BE5-BCCE-5AE3B34FD269"
 license = false
 eula = false
 
@@ -21,7 +21,6 @@ opt-level = 3
 # The profile that 'cargo dist' will build with
 [profile.dist]
 inherits = "release"
-lto = "thin"
 
 [features]
 dev = ["bevy/dynamic_linking"]
@@ -48,7 +47,7 @@ serde = { version = "1.0", features = ["derive"] }
 steamlocate = "2.0"
 vfs = "0.12"
 walkdir = "2.5"
-bevy = { version = "0.18.0", features = ["dds","bmp", "dynamic_linking"] }
+bevy = { version = "0.18.0", features = ["dds","bmp"] }
 bevy-inspector-egui = "0.36"
 smooth-bevy-cameras = "0.14.0"
 egui_file = "0.25"
