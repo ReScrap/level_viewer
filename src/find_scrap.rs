@@ -6,7 +6,7 @@ const APP_ID: u32 = 897610;
 
 pub(crate) fn get_path() -> Result<PathBuf> {
     if let Ok(scrap_path) = std::env::var("SCRAPLAND_DIR") {
-        return Ok(PathBuf::from(scrap_path))
+        return Ok(PathBuf::from(scrap_path));
     }
     let steam = SteamDir::locate()?;
     let (app, lib) = steam
