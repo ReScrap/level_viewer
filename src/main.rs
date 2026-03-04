@@ -1,12 +1,11 @@
 use std::{
-    collections::{BTreeMap, HashMap, VecDeque},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque},
     hash::Hash,
     io::{BufWriter, Read, Write},
     ops::{Deref, DerefMut},
     path::PathBuf,
 };
 
-use color_eyre::eyre::{Context, Result, anyhow, bail};
 use asset_loader::PackedAssetRepositoryPlugin;
 use bevy::{
     anti_alias::{
@@ -31,7 +30,10 @@ use bevy::{
         wireframe::{Wireframe, WireframeColor, WireframeConfig, WireframePlugin},
     },
     post_process::{
-        auto_exposure::AutoExposure, bloom::{Bloom, BloomCompositeMode, BloomPrefilter}, dof::{DepthOfField, DepthOfFieldMode}, motion_blur::MotionBlur
+        auto_exposure::AutoExposure,
+        bloom::{Bloom, BloomCompositeMode, BloomPrefilter},
+        dof::{DepthOfField, DepthOfFieldMode},
+        motion_blur::MotionBlur,
     },
     prelude::{Result as BevyResult, *},
     render::{
@@ -50,6 +52,7 @@ use bevy_inspector_egui::{
 };
 use binrw::{BinReaderExt, binread};
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
+use color_eyre::eyre::{Context, Result, anyhow, bail};
 use configparser::ini::Ini;
 use itertools::Itertools;
 use num_traits::Float;
@@ -65,7 +68,7 @@ use crate::{
     // materials::Hologram,
     asset_loader::TestAsset,
     materials::TestMaterial,
-    parser::{LightType, ParsedData},
+    parser::{AniTrackType, AnimTracks, LightType, ParsedData},
 };
 mod asset_loader;
 mod export;
@@ -218,31 +221,119 @@ fn get_packed_files() -> Result<Vec<PathBuf>> {
     Ok(packed_files)
 }
 
+fn dump_ani(fs: &MultiPackFS, sm3: &str, cm3: &str) -> Result<HashMap<String, AnimTracks>> {
+    let mut track_map: HashMap<String, AnimTracks> = HashMap::new();
+    let ParsedData::Data(Data::SM3(sm3)) = fs.parse_file(sm3)? else {
+        bail!("Failed to parse model!")
+    };
+    let ParsedData::Data(Data::CM3(cm3)) = fs.parse_file(cm3)? else {
+        bail!("Failed to parse animation!")
+    };
+    let Some(ani) = cm3.scene.ani.get() else {
+        bail!("No animation data found in CM3!");
+    };
+    for node in &sm3.scene.nodes {
+        if node.object_index >= 0 {
+            let idx: usize = node.object_index.try_into()?;
+            if let Some(track) =
+                ani.track_map[idx].and_then(|v| ani.get_track(v as usize).ok().flatten())
+            {
+                let name = (*node.name).to_owned();
+                let nam = &ani.tracks[ani.track_map[idx].unwrap() as usize];
+                println!("   {}: {:?} ({}+{} frames)", name, nam.cm3_flags, nam.start_frame, nam.frames);
+                track_map.insert(name, track);
+            }
+        }
+    }
+    return Ok(track_map);
+}
+
 fn main() -> Result<()> {
     color_eyre::install()?;
     let packed_files = get_packed_files()?;
     let fs = MultiPackFS::new(&packed_files)?;
-    let mut chunks: Vec<Vec<u8>> = vec![];
-    for entry in fs.entries()? {
-        if entry.path.ends_with(".cm3") {
-            // println!("{p}: {s}", p=&entry.path, s=entry.size);
-            let Ok(ParsedData::Data(Data::CM3(cm3))) = fs.parse_file(&entry.path) else {
-                continue;
-            };
-            let Some(ani) = cm3.scene.ani.get() else {
-                continue;
-            };
-            chunks.push(ani.data.clone());
+    let entries = fs.entries()?;
+    // for sm3_entry in &entries {
+    //     if !sm3_entry.path.ends_with(".sm3") {
+    //         continue;
+    //     }
+    //     let Some((base,_)) = sm3_entry.path.rsplit_once('/') else {
+    //         continue;
+    //     };
+    //     println!("{}", sm3_entry.path);
+    //     for cm3_entry in &entries {
+    //         if !cm3_entry.path.ends_with("play.cm3") {
+    //             continue;
+    //         }
+    //         if !cm3_entry.path.starts_with(base) {
+    //             continue;
+    //         }
+    //         println!("+ {}", cm3_entry.path);
+    //     }
+    // return Ok(());
+    // }
+    {
+        let mut dump_map: HashMap<String,HashMap<String,AnimTracks>> = HashMap::default();
+        for entry in fs.entries()? {
+            let parts: Vec<&str> = entry.path.split('/').filter(|s| !s.is_empty()).collect();
+            if parts.len() > 4
+                && parts[0] == "levels"
+                && parts[2] == "map"
+                && parts
+                    .last()
+                    .map(|p| p.ends_with("play.cm3"))
+                    .unwrap_or(false)
+            {
+                let anm_name = format!("{}anm", parts[3]);
+                if anm_name == parts[4] {
+                    let level = parts[1];
+                    let anm = parts[3];
+                    let scene_path = ["levels", level, "map", anm, &format!("{anm}.sm3")].join("/");
+                    println!("{level}: {anm}");
+                    let exists = fs.exists(&scene_path).unwrap_or(false);
+                    println!(
+                        "{entry} -> {scene_path}: {exists}",
+                        entry = &entry.path,
+                    );
+                    dump_map.insert(entry.path.to_owned(),dump_ani(&fs, &scene_path, &entry.path)?);
+                }
+            }
         }
-    };
-    chunks.sort_by_key(|e| e.len());
-    chunks.reverse();
-    for c in chunks.iter().take(10) {
-        println!("```");
-        rhexdump!(c);
-        println!("```");
+        let mut fh = BufWriter::new(fs_err::File::create("anim.json")?);
+        serde_json::to_writer(&mut fh, &dump_map)?;
+        return Ok(());
     }
-    return Ok(());
+    {
+        let mut track_map: HashMap<&str, AnimTracks> = HashMap::new();
+        let model = "/levels/fake/map/fake2/fake2.sm3";
+        let anm = "/levels/fake/map/fake2/fake2anm/play.cm3";
+        let ParsedData::Data(Data::SM3(sm3)) = fs.parse_file(model)? else {
+            bail!("Failed to parse model!")
+        };
+        let ParsedData::Data(Data::CM3(cm3)) = fs.parse_file(anm)? else {
+            bail!("Failed to parse animation!")
+        };
+        let Some(ani) = cm3.scene.ani.get() else {
+            bail!("No animation data found in CM3!");
+        };
+        println!("Model: {model}");
+        println!("Animation: {anm}");
+        for node in &sm3.scene.nodes {
+            if node.object_index >= 0 {
+                let idx: usize = node.object_index.try_into()?;
+                if let Some(track) =
+                    ani.track_map[idx].and_then(|v| ani.get_track(v as usize).ok().flatten())
+                {
+                    track_map.insert(&*node.name, track);
+                    let nam = &ani.tracks[ani.track_map[idx].unwrap() as usize];
+                    println!("{}: {:?}", node.name, nam.cm3_flags);
+                }
+            }
+        }
+        let mut fh = BufWriter::new(fs_err::File::create("dump.json")?);
+        serde_json::to_writer(&mut fh, &track_map)?;
+        return Ok(());
+    }
     let state = State {
         fs,
         data_path: std::env::args().nth(1),
@@ -332,9 +423,7 @@ fn main() -> Result<()> {
             ),
         )
         .add_systems(FixedUpdate, (autofocus, animate_camera, animate_textures))
-        .add_plugins(MaterialPlugin::<
-            ExtendedMaterial<StandardMaterial, TestMaterial>,
-        >::default())
+        .add_plugins(MaterialPlugin::<ScrapMaterial>::default())
         .init_gizmo_group::<DefaultGizmoConfigGroup>()
         .init_asset::<asset_loader::TestAsset>();
     // .init_asset_loader::<asset_loader::TestLoader>();
@@ -348,7 +437,7 @@ fn node_color(node: &parser::Node) -> Color {
         match node_data {
             NodeData::Camera(_) => Color::linear_rgb(1., 1., 0.), // #ffff00
             NodeData::Dummy => Color::linear_rgb(1., 1., 1.),     // #ffffff
-            NodeData::TriangleMesh(_) => Color::linear_rgb(0., 0., 1.), // #0000ff
+            NodeData::TriangleMesh => Color::linear_rgb(0., 0., 1.), // #0000ff
             NodeData::D3DMesh(_) => Color::linear_rgb(0., 1., 1.), // #00ffff
             NodeData::Light(_) => Color::linear_rgb(1., 0., 1.),  // #ff00ff
             NodeData::Ground(_) => Color::linear_rgb(0.5, 1., 0.), // #7fff00
@@ -372,6 +461,8 @@ struct AnimState {
     t: f32,
 }
 
+// TODO: adapt into method on ANI struct, returns Vec<(Isometry3d, FOV, LinearRGBA, Int, Vis)
+
 fn anim_debug(state: Res<State>, time: Res<Time>, mut gizmos: Gizmos, mut did_run: Local<bool>) {
     let Some(ParsedData::Data(Data::CM3(cm3))) = &state.data else {
         return;
@@ -386,28 +477,25 @@ fn anim_debug(state: Res<State>, time: Res<Time>, mut gizmos: Gizmos, mut did_ru
     // dbg!(&ani.data.len());
     // dbg!(&ani.nabk.data.len());
     let total_size = ani
-        .nam
+        .tracks
         .iter()
-        .flat_map(|nam| &nam.data.blocks)
+        .flat_map(|nam| &nam.tracks)
         .map(|block| block.size)
         .sum::<usize>();
-    assert_eq!(total_size, ani.nabk.data.len());
+    assert_eq!(total_size, ani.data.len());
     // println!("== DATA ==");
-    let mut buffer = std::io::Cursor::new(&ani.nabk.data);
-    if !*did_run {
-        rhexdump!(&ani.data);
-    }
-    for (track_idx, nam) in ani.nam.iter().enumerate() {
+    let mut buffer = std::io::Cursor::new(&ani.data);
+    for (track_idx, nam) in ani.tracks.iter().enumerate() {
         // println!("{nam:?}");
         let mut isometry = Isometry3d::IDENTITY;
         let mut active = false;
         let mut color = Oklcha::sequential_dispersed(track_idx as u32);
-        for (block_idx, block) in nam.data.blocks.iter().enumerate() {
+        for (block_idx, block) in nam.tracks.iter().enumerate() {
             let mut data = vec![0u8; block.size];
             buffer.read_exact(&mut data).unwrap();
             let mut fh = std::io::Cursor::new(&data);
-            let mut block_start = nam.data.start_frame;
-            let mut block_frame_count = nam.data.frames;
+            let mut block_start = nam.start_frame;
+            let mut block_frame_count = nam.frames;
             let mut elem_count = block.size / block.elem_size;
             if block.stream && block.optimized {
                 elem_count = (block.size - 6) / block.elem_size;
@@ -435,11 +523,11 @@ fn anim_debug(state: Res<State>, time: Res<Time>, mut gizmos: Gizmos, mut did_ru
             // if block.stream || block.optimized {
             //     continue;
             // }
-            match block.data_type {
-                0 => {
+            match block.track_type {
+                AniTrackType::Position => {
                     // let mut pos = Vec::new();
                     let mut dst = [0f32; 3];
-                    let mut n: usize = nam.data.start_frame as usize;
+                    let mut n: usize = nam.start_frame as usize;
                     while fh.position() != (fh.get_ref().len() as u64) {
                         fh.read_f32_into::<LittleEndian>(&mut dst).unwrap();
                         if n == current_frame {
@@ -450,9 +538,9 @@ fn anim_debug(state: Res<State>, time: Res<Time>, mut gizmos: Gizmos, mut did_ru
                     }
                     // println!("{pos:?}");
                 } // Pos,
-                1 => {
+                AniTrackType::Rotation => {
                     let mut dst = [0f32; 4];
-                    let mut n: usize = nam.data.start_frame as usize;
+                    let mut n: usize = nam.start_frame as usize;
                     while fh.position() != (fh.get_ref().len() as u64) {
                         fh.read_f32_into::<LittleEndian>(&mut dst).unwrap();
                         if n == current_frame {
@@ -462,9 +550,9 @@ fn anim_debug(state: Res<State>, time: Res<Time>, mut gizmos: Gizmos, mut did_ru
                         n += 1;
                     }
                 }
-                2..=4 => {
+                AniTrackType::Color => {
                     let mut dst = [0u8; 4];
-                    let mut n: usize = nam.data.start_frame as usize;
+                    let mut n: usize = nam.start_frame as usize;
                     while fh.position() != (fh.get_ref().len() as u64) {
                         fh.read_exact(&mut dst).unwrap();
                         if n == current_frame {
@@ -474,8 +562,8 @@ fn anim_debug(state: Res<State>, time: Res<Time>, mut gizmos: Gizmos, mut did_ru
                         n += 1;
                     }
                 }
-                7 => {
-                    let mut n: usize = nam.data.start_frame as usize;
+                AniTrackType::Visibility => {
+                    let mut n: usize = nam.start_frame as usize;
                     while fh.position() != (fh.get_ref().len() as u64) {
                         let val = fh.read_u8().unwrap();
                         if n == current_frame {
@@ -485,7 +573,7 @@ fn anim_debug(state: Res<State>, time: Res<Time>, mut gizmos: Gizmos, mut did_ru
                     }
                 } // Vis,
                 other => {
-                    warn!("Unknown animation block id: {other}")
+                    warn!("Unknown animation block id: {other:?}")
                 }
             }
         }
@@ -494,7 +582,7 @@ fn anim_debug(state: Res<State>, time: Res<Time>, mut gizmos: Gizmos, mut did_ru
             gizmos.axes(isometry, 10.0);
         }
     }
-    assert_eq!(buffer.position(), ani.nabk.data.len() as u64);
+    assert_eq!(buffer.position(), ani.data.len() as u64);
     // std::process::exit(0);
     *did_run = true;
 }
@@ -1243,11 +1331,11 @@ fn load_level(
                     metallic_roughness_texture,
                     // emissive: Color::Srgba(colors.emissive).to_linear(),
                     normal_map_texture,
-                    perceptual_roughness: (2.0/(2.0+colors.power)).powf(0.25),
+                    perceptual_roughness: (2.0 / (2.0 + colors.power)).powf(0.25),
                     metallic: 0.0,
                     reflectance: 0.5,
                     // specular_tint: Color::Srgba(colors.specular),
-                    double_sided: scrap_mat.mat_props.two_sided==1,
+                    double_sided: scrap_mat.mat_props.two_sided == 1,
                     cull_mode: Some(Face::Back),
                     ..default()
                 };
@@ -1377,7 +1465,7 @@ fn load_level(
                         MaterialName(mat_name.to_owned()),
                         MapNames(map_names.clone()),
                         MapTex(map_tex.clone()),
-                        ScrapMat(scrap_mat)
+                        ScrapMat(scrap_mat),
                     ));
                     pbr.observe(mesh_clicked);
                     if !mesh_props.contains_key("no_lightmap") {
@@ -1506,12 +1594,12 @@ impl parser::MAT {
         let glow = norm(&self.glow);
         let mod_color = norm(&self.diffuse_mod);
         let amb_override = norm(&self.ambient_override);
-        
+
         // 1. Initialize Diffuse and Ambient
         // C++: Diffuse starts as self.diffuse, Alpha 1.0
         let mut diffuse = norm(&self.diffuse);
         diffuse[3] = 1.0;
-        
+
         // C++: Ambient starts as White (1.0, 1.0, 1.0, 1.0)
         let mut ambient = [1.0, 1.0, 1.0, 1.0];
 
@@ -1524,7 +1612,11 @@ impl parser::MAT {
 
             // Set Ambient based on attrib flag
             // C++: if (attrib & 0x80) != 0 (UseAmbient)
-            if self.mat_props.attrib.contains(&parser::MatPropAttrib::USE_AMBIENT) {
+            if self
+                .mat_props
+                .attrib
+                .contains(&parser::MatPropAttrib::USE_AMBIENT)
+            {
                 ambient[0] = diffuse[0] * 0.8;
                 ambient[1] = diffuse[1] * 0.8;
                 ambient[2] = diffuse[2] * 0.8;
@@ -1540,7 +1632,12 @@ impl parser::MAT {
         // Since norm() already divides by 255.0, we just multiply by spec_mult
         let spec = norm(&self.specular);
         let spec_mult = self.spec_mult;
-        let specular = [spec[0] * spec_mult, spec[1] * spec_mult, spec[2] * spec_mult, 1.0];
+        let specular = [
+            spec[0] * spec_mult,
+            spec[1] * spec_mult,
+            spec[2] * spec_mult,
+            1.0,
+        ];
 
         // 4. Apply Glow/Emissive interactions
         // C++: Emissive is overwritten with (Diffuse * Glow) + (Diffuse * 0)
@@ -1548,9 +1645,9 @@ impl parser::MAT {
             diffuse[0] * glow[0],
             diffuse[1] * glow[1],
             diffuse[2] * glow[2],
-            1.0
+            1.0,
         ];
-        
+
         // C++: Add EngineVars contribution (0 here)
         emissive[0] += diffuse[0] * MAT_EMISSIVE;
         emissive[1] += diffuse[1] * MAT_EMISSIVE;
@@ -1633,15 +1730,21 @@ fn inspector(
             ui.label(format!("Material: {mat_name}"));
             ui.label(format!("Orig Blend Mode: {:?}", scrap_mat.mat_props.orig));
             ui.label(format!("Dest Blend Mode: {:?}", scrap_mat.mat_props.dest));
-            ui.label(format!("Two Sided: {}", scrap_mat.mat_props.two_sided!=0));
-            ui.label(format!("Dyn. Illum.: {}", scrap_mat.mat_props.dyn_illum!=0));
-            ui.label(format!("Dif. Alpha: {}", scrap_mat.mat_props.dif_alpha!=0));
-            ui.label(format!("Env Map: {}", scrap_mat.mat_props.env_map!=0));
+            ui.label(format!("Two Sided: {}", scrap_mat.mat_props.two_sided != 0));
+            ui.label(format!(
+                "Dyn. Illum.: {}",
+                scrap_mat.mat_props.dyn_illum != 0
+            ));
+            ui.label(format!(
+                "Dif. Alpha: {}",
+                scrap_mat.mat_props.dif_alpha != 0
+            ));
+            ui.label(format!("Env Map: {}", scrap_mat.mat_props.env_map != 0));
             ui.label(format!("Attrib: {:?}", scrap_mat.mat_props.attrib));
-            ui.label(format!("Z-Write: {:?}", scrap_mat.mat_props.z_write!=0));
+            ui.label(format!("Z-Write: {:?}", scrap_mat.mat_props.z_write != 0));
             ui.label(format!("Z-Func: {:?}", scrap_mat.mat_props.zfunc));
             ui.label("Raw:");
-            for (label,col) in [
+            for (label, col) in [
                 ("Ambient Override", &scrap_mat.ambient_override),
                 ("Diffuse", &scrap_mat.diffuse),
                 ("Diffuse Mod", &scrap_mat.diffuse_mod),
@@ -1656,13 +1759,13 @@ fn inspector(
             }
             ui.label("Computed:");
             let colors = scrap_mat.colors();
-            for (label,col) in [
+            for (label, col) in [
                 ("Diffuse", &colors.diffuse),
                 ("Ambient", &colors.ambient),
                 ("Emissive", &colors.emissive),
                 ("Specular", &colors.specular),
             ] {
-                let col = &mut [col.red,col.green,col.blue,col.alpha];
+                let col = &mut [col.red, col.green, col.blue, col.alpha];
                 ui.horizontal(|ui| {
                     ui.label(label);
                     ui.color_edit_button_rgba_unmultiplied(col);
@@ -1752,7 +1855,7 @@ type CameraQuery<'a> = (
     &'a mut MotionBlur,
     &'a mut Bloom,
     &'a mut ColorGrading,
-    &'a mut AutoExposure
+    &'a mut AutoExposure,
 );
 
 fn post_settings(
@@ -1911,18 +2014,18 @@ fn render_amc(
 
 fn node_type(node: Option<&NodeData>) -> &'static str {
     node.map(|data| match data {
-            NodeData::Camera(_) => "Camera",
-            NodeData::Dummy => "Dummy",
-            NodeData::TriangleMesh(_) => "TriangleMesh",
-            NodeData::D3DMesh(_) => "D3DMesh",
-            NodeData::Light(_) => "Light",
-            NodeData::Ground(_) => "Ground",
-            NodeData::SistPart => "Particle System",
-            NodeData::Graphic3D(_) => "3D Graphic",
-            NodeData::Flare => "Flare",
-            NodeData::Portal(_) => "Portal",
-        })
-        .unwrap_or_else(|| "<Empty>")
+        NodeData::Camera(_) => "Camera",
+        NodeData::Dummy => "Dummy",
+        NodeData::TriangleMesh => "TriangleMesh",
+        NodeData::D3DMesh(_) => "D3DMesh",
+        NodeData::Light(_) => "Light",
+        NodeData::Ground(_) => "Ground",
+        NodeData::SistPart => "Particle System",
+        NodeData::Graphic3D(_) => "3D Graphic",
+        NodeData::Flare => "Flare",
+        NodeData::Portal(_) => "Portal",
+    })
+    .unwrap_or_else(|| "<Empty>")
 }
 
 fn mesh_from_m3d(faces: &[[u16; 3]], verts: &[Vertex]) -> Mesh {
@@ -2748,7 +2851,10 @@ impl CameraBundle {
             hdr: Hdr,
             tonemapping: Tonemapping::AcesFitted,
             color_grading: ColorGrading {
-                global: ColorGradingGlobal { exposure: 1.0, ..default() },
+                global: ColorGradingGlobal {
+                    exposure: 1.0,
+                    ..default()
+                },
                 ..default()
             },
             bloom: Bloom {
@@ -2778,9 +2884,7 @@ impl CameraBundle {
                 near: 0.01,
                 ..default()
             }),
-            exposure: AutoExposure {
-                ..default()
-            },
+            exposure: AutoExposure { ..default() },
             contrast_adaptive_sharpening: ContrastAdaptiveSharpening::default(),
             msaa: Msaa::Sample8,
             ctl: DroneCam::default(),

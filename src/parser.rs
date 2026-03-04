@@ -3,7 +3,7 @@ use std::{
     borrow::Borrow,
     collections::{BTreeMap, BTreeSet, HashMap},
     fmt::{Debug, Display},
-    io::{BufReader, Read, Seek},
+    io::{BufReader, Cursor, Read, Seek},
     ops::Deref,
     path::{Path, PathBuf},
 };
@@ -365,7 +365,6 @@ fn vertex_size_from_id(fmt_id: u32) -> Result<u32> {
     Ok(fmt_size)
 }
 
-
 fn vertex_format_from_id(fmt_id: u32, fmt: u32) -> Result<FVF> {
     let fvf = match fmt_id {
         0 => 0x0,
@@ -463,7 +462,7 @@ pub(crate) enum NodeData {
     #[br(magic = 0x0u32)]
     Dummy,
     #[br(magic = 0xa1_00_00_01_u32)]
-    TriangleMesh(Unparsed<0x100>), // TODO: Empty or unused?
+    TriangleMesh,
     #[br(magic = 0xa1_00_00_02_u32)]
     D3DMesh(Box<MD3D>),
     #[br(magic = 0xa2_00_00_04_u32)]
@@ -819,18 +818,43 @@ pub(crate) struct EVA {
     verts: Vec<Optional<VertexAnim>>,
 }
 
-#[repr(u32)]
-pub(crate) enum StmFlags {
-    ani_pos = 0x1,
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Sequence, Serialize, ToPrimitive)]
+#[repr(u8)]
+pub(crate) enum AniTrackType {
+    Position = 0,   // [f32;3]
+    Rotation = 1,   // [f32;4]
+    FOV = 2,        // f32
+    Color = 3,      // [u8;4]
+    Intensity = 4,  // f32
+    Visibility = 7, // u8
+    EVA = 12,       // N/A
 }
 
-#[repr(u32)]
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Sequence, Serialize, ToPrimitive)]
-pub(crate) enum OptFlags {
-    anim_pos = 0x1,
-    ani_rot = 0x2,
-    anim_color_intens = 0x18,
-    anim_visible = 0x80,
+impl AniTrackType {
+    fn size(&self) -> usize {
+        match self {
+            AniTrackType::Position => 3 * 4,
+            AniTrackType::Rotation => 4 * 4,
+            AniTrackType::FOV => 1 * 4,
+            AniTrackType::Color => 4 * 1,
+            AniTrackType::Intensity => 1 * 4,
+            AniTrackType::Visibility => 1 * 1,
+            AniTrackType::EVA => 0,
+        }
+    }
+
+    fn mask(&self) -> u32 {
+        1u32 << unsafe { *<*const _>::from(self).cast::<u8>() }
+    }
+}
+
+fn parse_ani_track_type(flags: u32) -> Result<BTreeSet<AniTrackType>> {
+    if flags & 0xffffef60 != 0 {
+        bail!("unsupported flags detected!");
+    }
+    Ok(enum_iterator::all::<AniTrackType>()
+        .filter(|flag| (flags & (1 << flag.to_u8().unwrap_or(0xff))) != 0)
+        .collect())
 }
 
 #[derive(Debug, Serialize)]
@@ -839,106 +863,64 @@ pub(crate) struct BlockInfo {
     pub elem_size: usize,
     pub stream: bool,
     pub optimized: bool,
-    pub data_type: usize,
+    pub track_type: AniTrackType,
 }
 
-#[derive(Debug, Serialize)]
-pub(crate) struct AniData {
-    pub start_frame: u32,
-    pub frames: u32,
-    pub cm3_flags: u32,
-    pub opt_flags: u32,
-    pub stm_flags: u32,
-    pub blocks: Vec<BlockInfo>,
-    pub eva: Option<EVA>, // cm3_flags&0x1000
+#[derive(Debug, Default, Serialize)]
+pub(crate) struct AnimTracks {
+    pub pos: Option<Vec<[f32; 3]>>,
+    pub rot: Option<Vec<[f32; 4]>>,
+    pub fov: Option<Vec<f32>>,
+    pub color: Option<Vec<[u8; 4]>>,
+    pub intensity: Option<Vec<f32>>,
+    pub visibility: Option<Vec<bool>>,
 }
 
-impl AniData {
-    #[binrw::parser(reader, endian)]
-    fn parse() -> BinResult<Self> {
-        let start_frame = <_>::read_options(reader, endian, ())?;
-        let frames = <_>::read_options(reader, endian, ())?;
-        let cm3_flags = <_>::read_options(reader, endian, ())?;
-        if cm3_flags & 0xffffef60 != 0 {
-            let pos = reader.stream_position().unwrap_or_default();
-            return Err(binrw::Error::AssertFail {
-                pos,
-                message: "Invalid NAM flags".to_owned(),
-            });
-        }
-        let mut opt_flags: u32 = <_>::read_options(reader, endian, ())?;
-        if opt_flags & 0xfff8 != 0 {
-            let pos = reader.stream_position().unwrap_or_default();
-            return Err(binrw::Error::AssertFail {
-                pos,
-                message: "Invalid OPT flags".to_owned(),
-            });
-        }
-        opt_flags |= 0x8000u32;
-        let stm_flags = <_>::read_options(reader, endian, ())?;
-        if stm_flags & 0xfff8 != 0 {
-            let pos = reader.stream_position().unwrap_or_default();
-            return Err(binrw::Error::AssertFail {
-                pos,
-                message: "Invalid STM flags".to_owned(),
-            });
-        }
-        /*
-        If (0x1 & Stm & Opt Flags):
-            Size (4-byte integer) followed by size bytes of data.
-        Elif Opt Flag 0x1:
-            $SIZE bytes (single 3D position, 3 floats).
-        Else:
-            num_frames * $SIZE
-        */
-        /*
-        optimized:
-            nvals: u16
-            unk_1: u16
-            unk_2: u16
-        */
-        let data_blocks = [
-            (0_usize, 0xc_usize),  // pos: f32 x 3
-            (1_usize, 0x10_usize), // rot: f32 x 4
-            (2_usize, 4_usize),    // col? u8 x 4
-            (3_usize, 4_usize),    // col? u8 x 4
-            (4_usize, 4_usize),    // col? u8 x 4
-            (7_usize, 1_usize),    // vis u8 x 1
-        ];
-        let mut blocks = Vec::new();
-        for (bit_idx, size) in data_blocks.into_iter() {
-            if cm3_flags & (1 << bit_idx) == 0 {
-                continue;
-            }
-            let mut block_info = BlockInfo {
-                size,
-                elem_size: size,
-                data_type: bit_idx,
-                optimized: (opt_flags & (1 << bit_idx)) != 0,
-                stream: (stm_flags & (1 << bit_idx)) != 0,
-            };
-            if block_info.optimized && block_info.stream {
-                block_info.size = <u32>::read_options(reader, endian, ())? as usize;
-            }
-            if !block_info.optimized {
-                block_info.size *= frames as usize;
-            }
-            blocks.push(block_info);
-        }
-        let mut eva: Option<EVA> = None;
-        if cm3_flags & 0x1000 != 0 {
-            eva = Some(<EVA>::read_options(reader, endian, ())?);
-        }
-        Ok(Self {
-            start_frame,
-            frames,
-            cm3_flags,
-            opt_flags,
-            stm_flags,
-            eva,
-            blocks,
-        })
+fn parse_track_data<T>(data: &[u8]) -> Result<Vec<T>>
+where
+    T: for<'a> BinRead<Args<'a> = ()>,
+{
+    let mut reader = Cursor::new(data);
+    let mut out = Vec::with_capacity(data.len() / std::mem::size_of::<T>().max(1));
+    while (reader.position() as usize) < data.len() {
+        out.push(reader.read_le()?);
     }
+    Ok(out)
+}
+
+#[binrw::parser(reader, endian)]
+fn parse_ani_blocks(
+    frames: u32,
+    cm3_flags: &BTreeSet<AniTrackType>,
+    opt_flags: u32,
+    stm_flags: u32,
+) -> BinResult<Vec<BlockInfo>> {
+    let mut blocks = Vec::new();
+    for track in cm3_flags.iter() {
+        let mut block_info = BlockInfo {
+            size: track.size(),
+            elem_size: track.size(),
+            track_type: *track,
+            optimized: (opt_flags & track.mask()) != 0,
+            stream: (stm_flags & track.mask()) != 0,
+        };
+        if block_info.optimized && block_info.stream {
+            block_info.size = <u32>::read_options(reader, endian, ())? as usize;
+        }
+        if !block_info.optimized {
+            block_info.size *= frames as usize;
+        }
+        blocks.push(block_info);
+    }
+    Ok(blocks)
+}
+
+#[binread]
+#[derive(Debug)]
+struct AniStreamHeader {
+    size: u16,
+    start_frame: u16,
+    num_frames: u16,
 }
 
 #[binread]
@@ -948,8 +930,19 @@ pub(crate) struct NAM {
     size: u32,
     #[br(assert(version==1))]
     version: u32,
-    #[br(parse_with = AniData::parse)]
-    pub data: AniData,
+    pub start_frame: u32,
+    pub frames: u32,
+    #[br(try_map(|v: u32| parse_ani_track_type(v)))]
+    pub cm3_flags: BTreeSet<AniTrackType>,
+    #[br(assert(opt_flags & 0xfff8 == 0x8000u32))]
+    #[br(map(|v: u32| v|0x8000u32))]
+    pub opt_flags: u32,
+    #[br(assert(stm_flags & 0xfff8 == 0))]
+    pub stm_flags: u32,
+    #[br(parse_with = parse_ani_blocks, args(frames,&cm3_flags,opt_flags,stm_flags))]
+    pub tracks: Vec<BlockInfo>,
+    #[br(if(cm3_flags.contains(&AniTrackType::EVA)))]
+    pub eva: Option<EVA>,
 }
 
 #[binread]
@@ -973,12 +966,70 @@ pub(crate) struct ANI {
     pub last_frame: u32,
     pub num_objects: u32,
     unk_flags: u32,
-    num: u32,
-    #[br(count=num)]
+    num_nodes: u32,
+    #[br(count=num_nodes, map=|data: Vec<u8>| data.iter().map(|&v| (v!=0).then_some(v-1)).collect())]
+    pub track_map: Vec<Option<u8>>,
+    #[br(map=|v: NABK| v.data)]
     pub data: Vec<u8>,
-    pub nabk: NABK,
     #[br(count = num_objects)]
-    pub nam: Vec<NAM>,
+    pub tracks: Vec<NAM>,
+}
+
+impl ANI {
+    pub(crate) fn get_track(&self, index: usize) -> Result<Option<AnimTracks>> {
+        let Some(track) = self.tracks.get(index) else {
+            return Ok(None);
+        };
+        let mut offset: usize = self
+            .tracks
+            .iter()
+            .take(index)
+            .flat_map(|t| t.tracks.iter())
+            .map(|b| b.size)
+            .sum();
+        let mut out = AnimTracks::default();
+        for block in &track.tracks {
+            let end = offset
+                .checked_add(block.size)
+                .ok_or_else(|| anyhow!("ANI block size overflow"))?;
+            let raw = self
+                .data
+                .get(offset..end)
+                .ok_or_else(|| anyhow!("ANI/NABK block out of bounds"))?;
+            offset = end;
+            let payload = if block.optimized && block.stream {
+                let mut reader = Cursor::new(raw);
+                let header: AniStreamHeader = reader.read_le()?;
+                if header.size as usize != block.size {
+                    bail!(
+                        "invalid ANI streamed block size: {} != {}",
+                        header.size,
+                        block.size
+                    );
+                }
+                &raw[reader.position() as usize..]
+            } else {
+                raw
+            };
+            match block.track_type {
+                AniTrackType::Position => out.pos = Some(parse_track_data(payload)?),
+                AniTrackType::Rotation => out.rot = Some(parse_track_data(payload)?),
+                AniTrackType::FOV => out.fov = Some(parse_track_data(payload)?),
+                AniTrackType::Color => out.color = Some(parse_track_data(payload)?),
+                AniTrackType::Intensity => out.intensity = Some(parse_track_data(payload)?),
+                AniTrackType::Visibility => {
+                    out.visibility = Some(
+                        parse_track_data::<u8>(payload)?
+                            .into_iter()
+                            .map(|v| v != 0)
+                            .collect(),
+                    )
+                }
+                AniTrackType::EVA => (),
+            }
+        }
+        Ok(Some(out))
+    }
 }
 
 #[binread]
@@ -991,6 +1042,7 @@ pub(crate) struct SM3 {
     time_1: DateTime<Utc>,
     #[br(try_map=convert_timestamp)]
     time_2: DateTime<Utc>,
+    #[br(assert(!scene.nodes.is_empty() && scene.ani.get().is_none()))]
     pub scene: SCN,
 }
 
@@ -1016,6 +1068,7 @@ pub(crate) struct CM3 {
     time_1: DateTime<Utc>,
     #[br(try_map=convert_timestamp)]
     time_2: DateTime<Utc>,
+    #[br(assert(scene.nodes.is_empty() && scene.ani.get().is_some()))]
     pub scene: SCN,
 }
 
@@ -1408,10 +1461,10 @@ pub(crate) fn resolve_dep(dep: &str, asset_path: &VfsPath, config: &IniData) -> 
                     .chain(std::iter::once(dep_filename))
                     .collect::<Vec<&str>>()
                     .join("/");
-                if let Ok(path) = root.join(&path) {
-                    if path.exists().unwrap_or(false) {
-                        return Some(path);
-                    }
+                if let Ok(path) = root.join(&path)
+                    && path.exists().unwrap_or(false)
+                {
+                    return Some(path);
                 }
             }
         }
