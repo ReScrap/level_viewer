@@ -1153,10 +1153,10 @@ fn load_level(
                     ));
                     println!("{name:?} {transform:?} {}", name = node.name);
                     let color = Color::LinearRgba(LinearRgba::from_u8_array([
-                        light.col.r,
-                        light.col.g,
-                        light.col.b,
-                        light.col.a,
+                        light.color.r,
+                        light.color.g,
+                        light.color.b,
+                        light.color.a,
                     ]));
                     let mut ent = match light.light_type {
                         parser::LightType::Point => parent.spawn((
@@ -1468,7 +1468,7 @@ fn load_level(
                 let (mat_name, map_names, map_tex, mat, scrap_mat) = &materials[&data.mat_key];
                 let mat_inst = material_res.get(mat);
                 info!("Loading mesh {name} with material {mat_name}");
-                // dbg!(&tri.sector_num);
+                // dbg!(&tri.zone_index);
                 let mesh_props: HashMap<&str, &str> = prop_re
                     .captures_iter(name)
                     .filter_map(|g| {
@@ -1482,7 +1482,7 @@ fn load_level(
                     info!("Mesh properties: {mesh_props:?}");
                 }
                 let faces = &data.tris;
-                for verts in [&data.verts_1, &data.verts_2]
+                for verts in [&data.geometry_verts, &data.lightmap_verts]
                     .iter()
                     .filter_map(|v| v.inner.as_ref())
                 {
@@ -1770,8 +1770,8 @@ fn inspector(
             };
             let mat_name = mat_name.as_str();
             ui.label(format!("Material: {mat_name}"));
-            ui.label(format!("Orig Blend Mode: {:?}", scrap_mat.mat_props.orig));
-            ui.label(format!("Dest Blend Mode: {:?}", scrap_mat.mat_props.dest));
+            ui.label(format!("Orig Blend Mode: {:?}", scrap_mat.mat_props.src_blend));
+            ui.label(format!("Dest Blend Mode: {:?}", scrap_mat.mat_props.dst_blend));
             ui.label(format!("Two Sided: {}", scrap_mat.mat_props.two_sided != 0));
             ui.label(format!(
                 "Dyn. Illum.: {}",
@@ -1779,7 +1779,7 @@ fn inspector(
             ));
             ui.label(format!(
                 "Dif. Alpha: {}",
-                scrap_mat.mat_props.dif_alpha != 0
+                scrap_mat.mat_props.diffuse_alpha != 0
             ));
             ui.label(format!("Env Map: {}", scrap_mat.mat_props.env_map != 0));
             ui.label(format!("Attrib: {:?}", scrap_mat.mat_props.attrib));
