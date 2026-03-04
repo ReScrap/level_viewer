@@ -1,15 +1,16 @@
 use std::{path::Path, sync::Arc};
 
-use color_eyre::eyre::{Context, Result, anyhow, bail};
 use bevy::{
     asset::{
         AssetLoader, AsyncReadExt, VisitAssetDependencies,
         io::{
-            AssetReader, AssetReaderError, AssetReaderFuture, AssetSource, AssetSourceBuilder, AssetSourceId, Reader, SliceReader
+            AssetReader, AssetReaderError, AssetReaderFuture, AssetSource, AssetSourceBuilder,
+            AssetSourceId, Reader, SliceReader,
         },
     },
     prelude::*,
 };
+use color_eyre::eyre::{Context, Result, anyhow, bail};
 use vfs::{FileSystem, SeekAndRead, error::VfsErrorKind};
 
 use crate::{
@@ -40,7 +41,7 @@ impl Plugin for PackedAssetRepositoryPlugin {
         app.register_asset_source(
             AssetSourceId::Name("packed".into()),
             AssetSourceBuilder::new(move || Box::new(repository_1.clone()))
-                .with_processed_reader(move || Box::new(repository_2.clone()))
+                .with_processed_reader(move || Box::new(repository_2.clone())),
         );
     }
 }

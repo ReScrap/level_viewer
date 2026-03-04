@@ -4,7 +4,6 @@ use std::{
     io::{BufWriter, Write},
 };
 
-use color_eyre::eyre::{Context, Result, anyhow, bail};
 use bevy::{
     log::{error, info, tracing_subscriber::registry, warn},
     mesh::{MeshVertexAttribute, MeshVertexAttributeId, PrimitiveTopology, VertexFormat},
@@ -12,12 +11,14 @@ use bevy::{
     prelude::{Result as BevyResult, *},
     reflect::{TypeRegistration, TypeRegistry, serde::ReflectSerializer},
 };
+use color_eyre::eyre::{Context, Result, anyhow, bail};
 use image::{GenericImageView, Rgba};
 use rhexdump::rhexdump;
 use zip::unstable::write;
 
 use crate::{
-    LightmapHandles, LightmapNames, MapNames, MapTex, MaterialName, ScrapMat, ScrapMaterial, State, parser::{NodeData, ParsedData}
+    LightmapHandles, LightmapNames, MapNames, MapTex, MaterialName, ScrapMat, ScrapMaterial, State,
+    parser::{NodeData, ParsedData},
 };
 
 fn compress_image(img: &Image, quantize: bool, optimize: bool) -> BevyResult<Vec<u8>> {

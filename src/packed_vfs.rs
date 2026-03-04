@@ -6,9 +6,10 @@ use std::{
     path::{Path, PathBuf},
     sync::Arc,
 };
-use color_eyre::eyre::{Context, Result, anyhow, bail};
+
 use bevy::tasks::futures_lite::{AsyncRead, AsyncSeek};
 use binrw::{BinReaderExt, io::BufReader};
+use color_eyre::eyre::{Context, Result, anyhow, bail};
 use fs_err as fs;
 use memmap2::Mmap;
 use serde::Serialize;
@@ -238,7 +239,12 @@ impl AsyncSeek for FileHandle {
 }
 
 impl bevy::asset::io::Reader for FileHandle {
-    fn seekable(&mut self) -> std::result::Result<&mut dyn bevy::asset::io::SeekableReader, bevy::asset::io::ReaderNotSeekableError> {
+    fn seekable(
+        &mut self,
+    ) -> std::result::Result<
+        &mut dyn bevy::asset::io::SeekableReader,
+        bevy::asset::io::ReaderNotSeekableError,
+    > {
         Ok(self)
     }
 }
