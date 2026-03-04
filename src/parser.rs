@@ -34,7 +34,7 @@ pub(crate) struct PackedEntry {
 }
 
 #[binrw]
-#[br(magic = b"BFPK")]
+#[brw(magic = b"BFPK")]
 #[derive(Serialize, Debug)]
 pub(crate) struct PackedHeader {
     #[br(temp,assert(version==0))]
@@ -188,7 +188,7 @@ pub(crate) struct IniSection {
 
 /// Configuration data
 #[binrw]
-#[br(magic = b"INI\0")]
+#[brw(magic = b"INI\0")]
 #[bw(import_raw(compute: bool))]
 #[derive(Debug)]
 pub(crate) struct INI {
@@ -417,7 +417,7 @@ pub(crate) struct LFVFInner {
 }
 
 #[binrw]
-#[br(magic = b"LFVF")]
+#[brw(magic = b"LFVF")]
 #[bw(import_raw(compute: bool))]
 #[derive(Debug, Serialize)]
 pub(crate) struct LFVF {
@@ -470,7 +470,7 @@ pub(crate) struct MD3D_Skin {
 }
 
 #[binrw]
-#[br(magic = b"MD3D")]
+#[brw(magic = b"MD3D")]
 #[bw(import_raw(compute: bool))]
 #[derive(Debug, Serialize)]
 pub(crate) struct MD3D {
@@ -512,25 +512,25 @@ pub(crate) struct MD3D {
 #[derive(Debug, Serialize)]
 #[serde(tag = "type")]
 pub(crate) enum NodeData {
-    #[br(magic = 0x0u32)]
+    #[brw(magic = 0x0u32)]
     Dummy,
-    #[br(magic = 0xa1_00_00_01_u32)]
+    #[brw(magic = 0xa1_00_00_01_u32)]
     TriangleMesh,
-    #[br(magic = 0xa1_00_00_02_u32)]
+    #[brw(magic = 0xa1_00_00_02_u32)]
     D3DMesh(Box<MD3D>),
-    #[br(magic = 0xa2_00_00_04_u32)]
+    #[brw(magic = 0xa2_00_00_04_u32)]
     Camera(CAM),
-    #[br(magic = 0xa3_00_00_08_u32)]
+    #[brw(magic = 0xa3_00_00_08_u32)]
     Light(LUZ),
-    #[br(magic = 0xa4_00_00_10_u32)]
+    #[brw(magic = 0xa4_00_00_10_u32)]
     Ground(SUEL),
-    #[br(magic = 0xa5_00_00_20_u32)]
+    #[brw(magic = 0xa5_00_00_20_u32)]
     SistPart,
-    #[br(magic = 0xa6_00_00_40_u32)]
+    #[brw(magic = 0xa6_00_00_40_u32)]
     Graphic3D(SPR3),
-    #[br(magic = 0xa6_00_00_80_u32)]
+    #[brw(magic = 0xa6_00_00_80_u32)]
     Flare,
-    #[br(magic = 0xa7_00_01_00u32)]
+    #[brw(magic = 0xa7_00_01_00u32)]
     Portal(PORT),
 }
 
@@ -578,7 +578,7 @@ impl BinWrite for NodeData {
 }
 
 #[binrw]
-#[br(magic = b"SPR3")]
+#[brw(magic = b"SPR3")]
 #[bw(import_raw(compute: bool))]
 #[derive(Debug, Serialize)]
 pub(crate) struct SPR3 {
@@ -595,7 +595,7 @@ pub(crate) struct SPR3 {
 }
 
 #[binrw]
-#[br(magic = b"SUEL")]
+#[brw(magic = b"SUEL")]
 #[bw(import_raw(compute: bool))]
 #[derive(Debug, Serialize)]
 pub(crate) struct SUEL {
@@ -612,7 +612,7 @@ pub(crate) struct SUEL {
 }
 
 #[binrw]
-#[br(magic = b"CAM\0")]
+#[brw(magic = b"CAM\0")]
 #[bw(import_raw(compute: bool))]
 #[derive(Debug, Serialize)]
 pub(crate) struct CAM {
@@ -643,7 +643,7 @@ pub(crate) enum LightType {
 }
 
 #[binrw]
-#[br(magic = b"LUZ\0")]
+#[brw(magic = b"LUZ\0")]
 #[bw(import_raw(compute: bool))]
 #[derive(Debug, Serialize)]
 pub(crate) struct LUZ {
@@ -670,7 +670,7 @@ pub(crate) struct LUZ {
 }
 
 #[binrw]
-#[br(magic = b"PORT")]
+#[brw(magic = b"PORT")]
 #[bw(import_raw(compute: bool))]
 #[derive(Debug, Serialize)]
 pub(crate) struct PORT {
@@ -753,7 +753,7 @@ pub(crate) struct Node {
 }
 
 #[binrw]
-#[br(magic = b"MAP\0")]
+#[brw(magic = b"MAP\0")]
 #[bw(import_raw(compute: bool))]
 #[derive(Debug, Serialize, Clone)]
 pub(crate) struct MAP {
@@ -920,7 +920,7 @@ fn write_mat_maps(maps: &[Optional<MAP>; 5], version: u32, compute: bool) -> Bin
 }
 
 #[binrw]
-#[br(magic = b"MAT\0")]
+#[brw(magic = b"MAT\0")]
 #[bw(import_raw(compute: bool))]
 #[derive(Debug, Serialize, Clone)]
 pub(crate) struct MAT {
@@ -952,7 +952,7 @@ pub(crate) struct LightColor {
 }
 
 #[binrw]
-#[br(magic = b"SCN\0")]
+#[brw(magic = b"SCN\0")]
 #[bw(import_raw(compute: bool))]
 #[derive(Debug, Serialize)]
 pub(crate) struct SCN {
@@ -1011,7 +1011,7 @@ struct VertexAnim {
 }
 
 #[binrw]
-#[br(magic = b"EVA\0")]
+#[brw(magic = b"EVA\0")]
 #[bw(import_raw(compute: bool))]
 #[derive(Debug, Serialize)]
 pub(crate) struct EVA {
@@ -1219,7 +1219,7 @@ struct AniStreamHeader {
 }
 
 #[binrw]
-#[br(magic = b"NAM\0")]
+#[brw(magic = b"NAM\0")]
 #[bw(import_raw(compute: bool))]
 #[derive(Debug, Serialize)]
 pub(crate) struct NAM {
@@ -1247,7 +1247,7 @@ pub(crate) struct NAM {
 }
 
 #[binrw]
-#[br(magic = b"NABK")]
+#[brw(magic = b"NABK")]
 #[bw(import_raw(compute: bool))]
 #[derive(Debug, Serialize)]
 pub(crate) struct NABK {
@@ -1258,7 +1258,7 @@ pub(crate) struct NABK {
 }
 
 #[binrw]
-#[br(magic = b"ANI\0")]
+#[brw(magic = b"ANI\0")]
 #[bw(import_raw(compute: bool))]
 #[derive(Debug, Serialize)]
 pub(crate) struct ANI {
@@ -1347,7 +1347,7 @@ impl ANI {
 #[bw(import_raw(compute: bool))]
 #[derive(Debug, Serialize)]
 pub(crate) struct SM3 {
-    #[bw(try_calc = compute_size(self, 8, compute)?.try_into())]
+    #[bw(try_calc = compute_size(self, 4, compute)?.try_into())]
     size: u32,
     #[br(temp,assert(timestamp_magic==0x6515f8,"Invalid timestamp"))]
     #[bw(calc = 0x6515f8u32)]
@@ -1378,7 +1378,7 @@ impl SM3 {
 #[bw(import_raw(compute: bool))]
 #[derive(Debug, Serialize)]
 pub(crate) struct CM3 {
-    #[bw(try_calc = compute_size(self, 8, compute)?.try_into())]
+    #[bw(try_calc = compute_size(self, 4, compute)?.try_into())]
     size: u32,
     #[br(temp,assert(timestamp_magic==0x6515f8,"Invalid timestamp"))]
     #[bw(calc = 0x6515f8u32)]
@@ -1421,7 +1421,7 @@ pub(crate) struct Dummy {
 #[bw(import_raw(compute: bool))]
 #[derive(Debug, Serialize)]
 pub(crate) struct DUM {
-    #[bw(try_calc = compute_size(self, 8, compute)?.try_into())]
+    #[bw(try_calc = compute_size(self, 4, compute)?.try_into())]
     size: u32,
     #[br(assert(version==1, "Invalid DUM version"))]
     #[bw(calc = 1u32)]
@@ -1437,7 +1437,7 @@ pub(crate) struct DUM {
 }
 
 #[binrw]
-#[br(magic = b"QUAD")]
+#[brw(magic = b"QUAD")]
 #[bw(import_raw(compute: bool))]
 #[derive(Debug, Serialize)]
 pub(crate) struct QUAD {
@@ -1465,7 +1465,7 @@ pub(crate) struct CMSH_Tri {
 }
 
 #[binrw]
-#[br(magic = b"CMSH")]
+#[brw(magic = b"CMSH")]
 #[bw(import_raw(compute: bool))]
 #[derive(Debug, Serialize)]
 pub(crate) struct CMSH {
@@ -1489,7 +1489,7 @@ pub(crate) struct CMSH {
 }
 
 #[binrw]
-#[br(magic = b"AMC\0")]
+#[brw(magic = b"AMC\0")]
 #[derive(Debug, Serialize, Default)]
 struct EmptyAMC {
     #[br(assert(size==0))]
@@ -1502,7 +1502,7 @@ struct EmptyAMC {
 #[bw(import_raw(compute: bool))]
 #[derive(Debug, Serialize)]
 pub(crate) struct AMC {
-    #[bw(try_calc = compute_size(self, 8, compute)?.try_into())]
+    #[bw(try_calc = compute_size(self, 4, compute)?.try_into())]
     size: u32,
     #[br(assert(version==100,"Invalid AMC version"))]
     #[bw(calc = 100u32)]
@@ -1584,7 +1584,7 @@ pub(crate) struct EMI_Textures {
 #[bw(import_raw(compute: bool))]
 #[derive(Debug, Serialize)]
 pub(crate) struct EMI {
-    #[bw(try_calc = compute_size(self, 8, compute)?.try_into())]
+    #[bw(try_calc = compute_size(self, 4, compute)?.try_into())]
     size: u32,
     #[br(assert((103..=105).contains(&version)))]
     pub version: u32,
@@ -1621,19 +1621,19 @@ impl EMI {
     }
 }
 
-#[binread]
+#[binrw]
 #[derive(Debug, Serialize)]
 #[serde(tag = "type")]
 pub(crate) enum Data {
-    #[br(magic = b"SM3\0")]
+    #[brw(magic = b"SM3\0")]
     SM3(SM3),
-    #[br(magic = b"CM3\0")]
+    #[brw(magic = b"CM3\0")]
     CM3(CM3),
-    #[br(magic = b"DUM\0")]
+    #[brw(magic = b"DUM\0")]
     DUM(DUM),
-    #[br(magic = b"AMC\0")]
+    #[brw(magic = b"AMC\0")]
     AMC(AMC),
-    #[br(magic = b"EMI\0")]
+    #[brw(magic = b"EMI\0")]
     EMI(EMI),
 }
 
@@ -1667,6 +1667,7 @@ fn parse_file(path: &VfsPath) -> Result<Data> {
     {
         rest_size += n;
     }
+    assert_eq!(rest_size, 0);
     // eprintln!("+{rest_size} unparsed bytes");
     Ok(ret)
 }
