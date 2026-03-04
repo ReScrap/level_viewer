@@ -211,6 +211,23 @@ mod string_encoding_tests {
             data.write_le(&mut out).unwrap();
         }
     }
+
+    #[test]
+    fn debug_roundtrip_local_mmission_sm3() {
+        let file = "mmission.sm3";
+        let Ok(bytes) = std::fs::read(file) else {
+            return;
+        };
+        let mut cur = Cursor::new(bytes.clone());
+        let data: Data = cur.read_le().unwrap();
+        let json = serde_json::to_string(&data).unwrap();
+        let data: Data = serde_json::from_str(&json).unwrap();
+        let mut out = Cursor::new(Vec::new());
+        data.write_le(&mut out).unwrap();
+        let out = out.into_inner();
+        assert_eq!(out.len(), bytes.len(), "{file}: length mismatch");
+        assert_eq!(out, bytes, "{file}: binary mismatch");
+    }
 }
 
 #[binrw]
@@ -327,6 +344,18 @@ impl std::fmt::Display for INI {
 }
 
 const EMPTY_LINE_KEY_PREFIX: &str = "\u{0}__EMPTY_LINE__";
+const DUPLICATE_KEY_PREFIX: &str = "\u{0}__DUP_KEY__";
+const DUPLICATE_KEY_SEPARATOR: char = '\u{0}';
+
+fn make_duplicate_key_marker(duplicate_index: u32, original_key: &str) -> String {
+    format!("{DUPLICATE_KEY_PREFIX}{duplicate_index}{DUPLICATE_KEY_SEPARATOR}{original_key}")
+}
+
+fn parse_duplicate_key_marker(marker: &str) -> Option<&str> {
+    let rest = marker.strip_prefix(DUPLICATE_KEY_PREFIX)?;
+    let (_, original_key) = rest.split_once(DUPLICATE_KEY_SEPARATOR)?;
+    Some(original_key)
+}
 
 impl Serialize for INI {
     fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
@@ -336,6 +365,7 @@ impl Serialize for INI {
         let mut out: IniData = IndexMap::new();
         let mut section_name = String::new();
         let mut empty_line_idx = 0u32;
+        let mut duplicate_key_count: HashMap<String, u32> = HashMap::new();
 
         for line in self
             .sections
@@ -348,6 +378,7 @@ impl Serialize for INI {
                 section_name = line[1..line.len() - 1].to_owned();
                 out.entry(section_name.clone()).or_default();
                 empty_line_idx = 0;
+                duplicate_key_count.clear();
                 continue;
             }
             if line.is_empty() {
@@ -362,9 +393,25 @@ impl Serialize for INI {
 
             let section = out.entry(section_name.clone()).or_default();
             if let Some((key, value)) = line.split_once('=') {
-                section.insert(key.to_owned(), Some(value.to_owned()));
+                let key = key.to_owned();
+                if section.contains_key(&key) {
+                    let duplicate_idx = duplicate_key_count.entry(key.clone()).or_insert(0);
+                    let marker = make_duplicate_key_marker(*duplicate_idx, &key);
+                    *duplicate_idx += 1;
+                    section.insert(marker, Some(value.to_owned()));
+                } else {
+                    section.insert(key, Some(value.to_owned()));
+                }
             } else {
-                section.insert(line.to_owned(), None);
+                let key = line.to_owned();
+                if section.contains_key(&key) {
+                    let duplicate_idx = duplicate_key_count.entry(key.clone()).or_insert(0);
+                    let marker = make_duplicate_key_marker(*duplicate_idx, &key);
+                    *duplicate_idx += 1;
+                    section.insert(marker, None);
+                } else {
+                    section.insert(key, None);
+                }
             }
         }
 
@@ -395,9 +442,10 @@ impl<'de> Deserialize<'de> for INI {
                     });
                     continue;
                 }
+                let key = parse_duplicate_key_marker(&key).unwrap_or(&key);
                 let string = match value {
                     Some(value) => format!("{key}={value}"),
-                    None => key,
+                    None => key.to_owned(),
                 };
                 lines.push(PascalString { string });
             }
@@ -411,7 +459,10 @@ impl<'de> Deserialize<'de> for INI {
 
 #[cfg(test)]
 mod ini_roundtrip_tests {
-    use super::{EMPTY_LINE_KEY_PREFIX, INI, IniSection, PascalString};
+    use super::{
+        DUPLICATE_KEY_PREFIX, EMPTY_LINE_KEY_PREFIX, INI, IniSection, PascalString,
+        parse_duplicate_key_marker,
+    };
 
     #[test]
     fn ini_serializes_to_hashmap_with_empty_default_section() {
@@ -588,6 +639,55 @@ mod ini_roundtrip_tests {
             .collect();
 
         assert_eq!(lines, vec!["a=1", "\0", "b=2"]);
+    }
+
+    #[test]
+    fn ini_serialization_preserves_duplicate_keys_with_markers() {
+        let ini = INI {
+            sections: vec![IniSection {
+                sections: vec![
+                    PascalString {
+                        string: "dup=1".to_owned(),
+                    },
+                    PascalString {
+                        string: "dup=2".to_owned(),
+                    },
+                ],
+            }],
+        };
+
+        let value = serde_json::to_value(&ini).unwrap();
+        let obj = value[""].as_object().unwrap();
+        let keys: Vec<&str> = obj.keys().map(|k| k.as_str()).collect();
+        assert_eq!(keys[0], "dup");
+        assert!(keys[1].starts_with(DUPLICATE_KEY_PREFIX));
+        assert_eq!(parse_duplicate_key_marker(keys[1]), Some("dup"));
+        assert_eq!(obj["dup"], "1");
+        assert_eq!(obj[keys[1]], "2");
+    }
+
+    #[test]
+    fn ini_deserialization_restores_duplicate_keys_from_markers() {
+        let mut section = serde_json::Map::new();
+        section.insert(
+            "dup".to_owned(),
+            serde_json::Value::String("1".to_owned()),
+        );
+        section.insert(
+            format!("{DUPLICATE_KEY_PREFIX}0\u{0}dup"),
+            serde_json::Value::String("2".to_owned()),
+        );
+        let mut root = serde_json::Map::new();
+        root.insert("".to_owned(), serde_json::Value::Object(section));
+
+        let ini: INI = serde_json::from_value(serde_json::Value::Object(root)).unwrap();
+        let lines: Vec<&str> = ini.sections[0]
+            .sections
+            .iter()
+            .map(|line| line.string.as_str())
+            .collect();
+
+        assert_eq!(lines, vec!["dup=1", "dup=2"]);
     }
 }
 

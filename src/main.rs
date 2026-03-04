@@ -318,13 +318,16 @@ fn main() -> Result<()> {
                 let ParsedData::Data(data) = data else {
                     continue;
                 };
-                let data = serde_json::to_string(&data)?;
-                let data: Data = match serde_json::from_str(&data) {
+                let data = serde_json::to_string_pretty(&data)?;
+                let jd = &mut serde_json::Deserializer::from_str(&data);
+                let data: Data = match serde_path_to_error::deserialize(jd) {
                     Ok(data) => data,
                     Err(err) => {
-                        eprintln!("{} JSON_ROUNDTRIP_FAIL: {}", entry.path, err);
+                        let col = err.inner().column();
+                        let line = err.inner().line();
+                        eprintln!("{} JSON_ROUNDTRIP_FAIL [{} {}:{}]: {}", entry.path, err.path(), line, col,  err);
                         std::fs::write("roundtrip_error.json", &data)?;
-                        failed += 1;
+                        fail_match += 1;
                         continue;
                     }
                 };
