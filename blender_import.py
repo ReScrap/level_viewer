@@ -329,6 +329,7 @@ def build_material(
             set_if_hasattr(material, "surface_render_method", modern_map.get(mode, "BLENDED"))
 
     has_alpha_source = False
+    diffuse_alpha_socket: bpy.types.NodeSocket | None = None
 
     if "diffuse" in role_images:
         tex = nodes.new("ShaderNodeTexImage")
@@ -336,7 +337,8 @@ def build_material(
         apply_uv_layer(tex, 0)
         replace_input_link(bsdf.inputs["Base Color"], tex.outputs["Color"])
         if "Alpha" in tex.outputs:
-            replace_input_link(bsdf.inputs["Alpha"], tex.outputs["Alpha"])
+            diffuse_alpha_socket = tex.outputs["Alpha"]
+            replace_input_link(bsdf.inputs["Alpha"], diffuse_alpha_socket)
             has_alpha_source = True
 
     if "glow" in role_images:
@@ -379,21 +381,6 @@ def build_material(
         else:
             replace_input_link(bsdf.inputs["Base Color"], tex.outputs["Color"])
 
-    if "lightmap" in role_images:
-        lm_uv = nodes.new("ShaderNodeUVMap")
-        lm_uv.uv_map = "lightmap"
-        lm_tex = nodes.new("ShaderNodeTexImage")
-        lm_tex.image = role_images["lightmap"]
-        links.new(lm_uv.outputs["UV"], lm_tex.inputs["Vector"])
-
-        base_src = get_or_make_color_source(bsdf.inputs["Base Color"])
-        lm_mul = nodes.new("ShaderNodeMixRGB")
-        lm_mul.blend_type = "MULTIPLY"
-        lm_mul.inputs["Fac"].default_value = 1.0
-        links.new(base_src, lm_mul.inputs[1])
-        links.new(lm_tex.outputs["Color"], lm_mul.inputs[2])
-        replace_input_link(bsdf.inputs["Base Color"], lm_mul.outputs["Color"])
-
     src_blend = str(mat_props.get("src_blend", "One"))
     dst_blend = str(mat_props.get("dst_blend", "Zero"))
     attrib = set(mat_props.get("attrib", [])) if isinstance(mat_props.get("attrib", []), list) else set()
@@ -407,10 +394,12 @@ def build_material(
     alpha_blend = (src_blend, dst_blend) in {
         ("SrcAlpha", "InvSrcAlpha"),
         ("SrcAlpha", "One"),
-    } or diffuse_alpha != 0 or has_alpha_source
+    } or (diffuse_alpha != 0 and src_blend in {"SrcAlpha", "One"})
 
     if "NO_ALPHA_BLEND" in attrib:
         alpha_blend = False
+
+    use_alpha_channel = additive or alpha_blend
 
     if additive:
         set_blend_mode("BLEND")
@@ -428,6 +417,10 @@ def build_material(
     else:
         set_blend_mode("OPAQUE")
         set_if_hasattr(material, "shadow_method", "OPAQUE")
+        if bsdf.inputs["Alpha"].is_linked:
+            while bsdf.inputs["Alpha"].links:
+                links.remove(bsdf.inputs["Alpha"].links[0])
+        bsdf.inputs["Alpha"].default_value = 1.0
 
     if shader_kind == "clouds" and "diffuse" in role_images and "glow" in role_images:
         cloud_tint = render_logic.get("cloud_tint")
@@ -472,6 +465,24 @@ def build_material(
                 replace_input_link(bsdf.inputs["Emission Color"], shader_node.outputs[0])
             except Exception as exc:
                 print(f"Shader node wiring failed for '{mat_name}': {exc}")
+
+    if "lightmap" in role_images:
+        lm_uv = nodes.new("ShaderNodeUVMap")
+        lm_uv.uv_map = "lightmap"
+        lm_tex = nodes.new("ShaderNodeTexImage")
+        lm_tex.image = role_images["lightmap"]
+        links.new(lm_uv.outputs["UV"], lm_tex.inputs["Vector"])
+
+        base_src = get_or_make_color_source(bsdf.inputs["Base Color"])
+        lm_mul = nodes.new("ShaderNodeMixRGB")
+        lm_mul.blend_type = "MULTIPLY"
+        lm_mul.inputs["Fac"].default_value = 1.0
+        links.new(base_src, lm_mul.inputs[1])
+        links.new(lm_tex.outputs["Color"], lm_mul.inputs[2])
+        replace_input_link(bsdf.inputs["Base Color"], lm_mul.outputs["Color"])
+
+    if use_alpha_channel and diffuse_alpha_socket is not None and not bsdf.inputs["Alpha"].is_linked:
+        replace_input_link(bsdf.inputs["Alpha"], diffuse_alpha_socket)
 
     return material
 
