@@ -30,6 +30,24 @@ def read_gzip_json(zf: zipfile.ZipFile, name: str) -> Any:
         return json.loads(gzip.decompress(fh.read()).decode("utf-8"))
 
 
+def read_gzip_text(zf: zipfile.ZipFile, name: str) -> str:
+    with zf.open(name, "r") as fh:
+        return gzip.decompress(fh.read()).decode("utf-8")
+
+
+def ensure_text_block(name: str, content: str) -> bpy.types.Text:
+    text = bpy.data.texts.get(name)
+    if text is None:
+        text = bpy.data.texts.new(name)
+    text.clear()
+    text.write(content)
+    return text
+
+
+def pretty_json(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=True, indent=2)
+
+
 def rgba8_to_float(color: dict[str, Any] | None) -> tuple[float, float, float, float]:
     if not color:
         return (1.0, 1.0, 1.0, 1.0)
@@ -228,6 +246,7 @@ def uv_from_vertex(vertex: dict[str, Any], field: str) -> tuple[float, float] | 
 
 def build_material(
     mat_key: int,
+    map_key: int,
     mat_data: dict[str, Any],
     shader_info: dict[str, Any] | None,
     role_images: dict[str, bpy.types.Image],
@@ -235,6 +254,11 @@ def build_material(
     mat_name = pascal_string(mat_data.get("name"), default=f"MAT:{mat_key}")
     material = bpy.data.materials.new(name=mat_name)
     material.use_nodes = True
+    material["lv_mat_key"] = int(mat_key)
+    material["lv_map_key"] = int(map_key)
+    material["lv_mat_json"] = pretty_json(mat_data)
+    if shader_info is not None:
+        material["lv_shader_json"] = pretty_json(shader_info)
 
     node_tree = material.node_tree
     assert node_tree is not None
@@ -449,6 +473,10 @@ def main() -> None:
         textures_map: dict[str, Any] = read_gzip_json(zf, "textures.json.gz")
         shader_entries = read_gzip_json(zf, "shaders.json.gz") if "shaders.json.gz" in names else []
 
+        level_text = pretty_json(level)
+        textures_text = pretty_json(textures_map)
+        shaders_text = pretty_json(shader_entries)
+
         shader_by_material_key: dict[int, dict[str, Any]] = {}
         for entry in shader_entries:
             if isinstance(entry, dict) and isinstance(entry.get("material_key"), int):
@@ -469,6 +497,19 @@ def main() -> None:
             if norm_rel not in images_by_texture_key:
                 images_by_texture_key[norm_rel] = load_image_from_zip(zf, member)
 
+    assert bpy.context.scene is not None
+    scene = bpy.context.scene
+    level_text_name = "lv_roundtrip_level.json"
+    textures_text_name = "lv_roundtrip_textures.json"
+    shaders_text_name = "lv_roundtrip_shaders.json"
+    ensure_text_block(level_text_name, level_text)
+    ensure_text_block(textures_text_name, textures_text)
+    ensure_text_block(shaders_text_name, shaders_text)
+    scene["lv_roundtrip_level_text"] = level_text_name
+    scene["lv_roundtrip_textures_text"] = textures_text_name
+    scene["lv_roundtrip_shaders_text"] = shaders_text_name
+    scene["lv_roundtrip_source_zip"] = str(ZIP_PATH)
+
     materials_list = level["emi"]["materials"]
     materials_by_key: dict[int, dict[str, Any]] = {
         int(item[0]): item[1] for item in materials_list if isinstance(item, list) and len(item) == 2
@@ -484,7 +525,7 @@ def main() -> None:
 
     material_cache: dict[tuple[int, int], bpy.types.Material] = {}
 
-    for tri in level["emi"].get("tri", []):
+    for tri_index, tri in enumerate(level["emi"].get("tri", [])):
         tri_name = pascal_string(tri.get("name"), default="mesh")
         tri_data = tri.get("data", {})
         faces = tri_data.get("tris", [])
@@ -519,6 +560,8 @@ def main() -> None:
                 uv_lm.data[i].uv = uv1
 
         obj = bpy.data.objects.new(tri_name, mesh)
+        obj["lv_tri_index"] = int(tri_index)
+        obj["lv_tri_json"] = pretty_json(tri)
 
         mat_key = int(tri_data.get("mat_key", 0))
         map_key = int(tri_data.get("map_key", 0))
@@ -566,7 +609,7 @@ def main() -> None:
                     role_images["lightmap"] = lm_img
 
             shader_info = shader_by_material_key.get(mat_key)
-            material_cache[cache_key] = build_material(mat_key, mat_data, shader_info, role_images)
+            material_cache[cache_key] = build_material(mat_key, map_key, mat_data, shader_info, role_images)
 
         if cache_key in material_cache:
             obj.active_material = material_cache[cache_key]
