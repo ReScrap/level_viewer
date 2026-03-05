@@ -60,6 +60,14 @@ def without_extension(path: str) -> str:
     return p.as_posix()
 
 
+def image_lookup_keys(name: str) -> list[str]:
+    norm = normalize_key(name)
+    no_ext = normalize_key(without_extension(name))
+    if norm == no_ext:
+        return [norm]
+    return [norm, no_ext]
+
+
 def shader_image_for_register(
     shader_info: dict[str, Any],
     register: str,
@@ -240,6 +248,10 @@ def build_material(
     bsdf.inputs["Base Color"].default_value = rgba8_to_float(mat_data.get("diffuse"))
     bsdf.inputs["Emission Color"].default_value = rgba8_to_float(mat_data.get("glow"))
 
+    mat_props = mat_data.get("mat_props", {}) if isinstance(mat_data.get("mat_props", {}), dict) else {}
+    two_sided = int(mat_props.get("two_sided", 0))
+    material.use_backface_culling = two_sided == 0
+
     render_logic = shader_info.get("render_logic", {}) if shader_info else {}
     engine_vars = shader_info.get("engine_vars", {}) if shader_info else {}
     shader_kind = str(render_logic.get("shader_kind", "material"))
@@ -267,13 +279,25 @@ def build_material(
             links.new(mapping.outputs["Vector"], tex_node.inputs["Vector"])
             return
 
+    def get_or_make_color_source(input_socket: bpy.types.NodeSocket) -> bpy.types.NodeSocket:
+        if input_socket.is_linked and input_socket.links:
+            return input_socket.links[0].from_socket
+        rgb = nodes.new("ShaderNodeRGB")
+        rgb.outputs[0].default_value = input_socket.default_value
+        return rgb.outputs[0]
+
+    def replace_input_link(input_socket: bpy.types.NodeSocket, output_socket: bpy.types.NodeSocket) -> None:
+        while input_socket.links:
+            links.remove(input_socket.links[0])
+        links.new(output_socket, input_socket)
+
     if "diffuse" in role_images:
         tex = nodes.new("ShaderNodeTexImage")
         tex.image = role_images["diffuse"]
         apply_uv_layer(tex, 0)
-        links.new(tex.outputs["Color"], bsdf.inputs["Base Color"])
+        replace_input_link(bsdf.inputs["Base Color"], tex.outputs["Color"])
         if "Alpha" in tex.outputs:
-            links.new(tex.outputs["Alpha"], bsdf.inputs["Alpha"])
+            replace_input_link(bsdf.inputs["Alpha"], tex.outputs["Alpha"])
 
     if "glow" in role_images:
         tex = nodes.new("ShaderNodeTexImage")
@@ -314,6 +338,52 @@ def build_material(
             links.new(mix.outputs["Color"], bsdf.inputs["Base Color"])
         else:
             links.new(tex.outputs["Color"], bsdf.inputs["Base Color"])
+
+    if "lightmap" in role_images:
+        lm_uv = nodes.new("ShaderNodeUVMap")
+        lm_uv.uv_map = "lightmap"
+        lm_tex = nodes.new("ShaderNodeTexImage")
+        lm_tex.image = role_images["lightmap"]
+        links.new(lm_uv.outputs["UV"], lm_tex.inputs["Vector"])
+
+        base_src = get_or_make_color_source(bsdf.inputs["Base Color"])
+        lm_mul = nodes.new("ShaderNodeMixRGB")
+        lm_mul.blend_type = "MULTIPLY"
+        lm_mul.inputs["Fac"].default_value = 1.0
+        links.new(base_src, lm_mul.inputs[1])
+        links.new(lm_tex.outputs["Color"], lm_mul.inputs[2])
+        replace_input_link(bsdf.inputs["Base Color"], lm_mul.outputs["Color"])
+
+    src_blend = str(mat_props.get("src_blend", "One"))
+    dst_blend = str(mat_props.get("dst_blend", "Zero"))
+    attrib = set(mat_props.get("attrib", [])) if isinstance(mat_props.get("attrib", []), list) else set()
+    diffuse_alpha = int(mat_props.get("diffuse_alpha", 0))
+
+    additive = (src_blend, dst_blend) in {
+        ("One", "One"),
+        ("SrcAlpha", "One"),
+        ("One", "InvSrcColor"),
+    } or "TRANSP_ONEONE" in attrib
+    alpha_blend = (src_blend, dst_blend) in {
+        ("SrcAlpha", "InvSrcAlpha"),
+        ("SrcAlpha", "One"),
+    } or diffuse_alpha != 0
+
+    if "NO_ALPHA_BLEND" in attrib:
+        alpha_blend = False
+
+    if additive:
+        material.blend_method = "BLEND"
+        material.shadow_method = "NONE"
+        bsdf.inputs["Emission Strength"].default_value = 1.0
+    elif alpha_blend:
+        material.blend_method = "BLEND"
+        material.shadow_method = "HASHED"
+        if not bsdf.inputs["Alpha"].is_linked:
+            bsdf.inputs["Alpha"].default_value = max(0.0, min(1.0, diffuse_alpha / 255.0))
+    else:
+        material.blend_method = "OPAQUE"
+        material.shadow_method = "OPAQUE"
 
     if shader_kind == "clouds" and "diffuse" in role_images and "glow" in role_images:
         cloud_tint = render_logic.get("cloud_tint")
@@ -472,15 +542,26 @@ def main() -> None:
                 tex_name = pascal_string(map_tex)
                 if not tex_name:
                     continue
-                image = images_by_texture_key.get(normalize_key(tex_name))
+                image = None
+                for key in image_lookup_keys(tex_name):
+                    image = images_by_texture_key.get(key)
+                    if image is not None:
+                        break
                 if image is not None:
                     role_images[role] = image
 
             if map_key in lightmap_by_map_key:
                 lm1, lm2 = lightmap_by_map_key[map_key]
-                lm_img = images_by_texture_key.get(normalize_key(lm1))
+                lm_img = None
+                for key in image_lookup_keys(lm1):
+                    lm_img = images_by_texture_key.get(key)
+                    if lm_img is not None:
+                        break
                 if lm_img is None:
-                    lm_img = images_by_texture_key.get(normalize_key(lm2))
+                    for key in image_lookup_keys(lm2):
+                        lm_img = images_by_texture_key.get(key)
+                        if lm_img is not None:
+                            break
                 if lm_img is not None:
                     role_images["lightmap"] = lm_img
 
