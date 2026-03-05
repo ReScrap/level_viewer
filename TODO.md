@@ -13,8 +13,10 @@
 - [ ] SM3<->CM3 mapping
 - [ ] Shader decompiler + AST builder + Blender importer (DirectX8 Shader -> AST)
 - [ ] Blender importer+exporter (AST -> Shader Nodes)
+  - [x] Export to ZIP+JSON+PNG
+  - [ ] Import into Blender
 
-## Notes:
+## Notes
 
 - Hologram Shader:
 t1 = Glow

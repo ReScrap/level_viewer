@@ -2245,7 +2245,7 @@ pub(crate) struct Level {
 }
 
 impl Level {
-    fn load(path: &VfsPath) -> Result<Self> {
+    pub(crate) fn load(path: &VfsPath) -> Result<Self> {
         let map_path = path.join("map")?;
         let emi_path = map_path.join("map3d.emi")?;
         let sm3_path = map_path.join("map3d.sm3")?;
@@ -2431,7 +2431,7 @@ pub(crate) mod multi_pack_fs {
         pub is_file: bool,
     }
 
-    #[derive(Debug)]
+    #[derive(Debug, Clone)]
     pub(crate) struct MultiPackFS {
         pub fs: VfsPath,
         current: Vec<String>,

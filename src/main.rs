@@ -3,7 +3,7 @@ use std::{
     hash::Hash,
     io::{BufWriter, Cursor, Read, Write},
     ops::{Deref, DerefMut},
-    path::PathBuf,
+    path::{Path, PathBuf},
 };
 
 use asset_loader::PackedAssetRepositoryPlugin;
@@ -23,7 +23,7 @@ use bevy::{
         gamepad::{GamepadAxisChangedEvent, GamepadButtonChangedEvent},
         mouse::AccumulatedMouseMotion,
     },
-    log::LogPlugin,
+    log::{LogPlugin, tracing_subscriber::util::SubscriberInitExt},
     mesh::{Indices, PrimitiveTopology},
     pbr::{
         ExtendedMaterial, Lightmap,
@@ -52,12 +52,13 @@ use bevy_inspector_egui::{
 };
 use binrw::{BinReaderExt, BinWrite, binread};
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
+use clap::Parser;
 use color_eyre::eyre::{Context, Result, anyhow, bail};
 use configparser::ini::Ini;
 use itertools::Itertools;
 use num_traits::Float;
 use packed_vfs::MultiPack;
-use parser::{Data, NodeData, Vertex, multi_pack_fs::MultiPackFS};
+use parser::{Data, Level, NodeData, Vertex, multi_pack_fs::MultiPackFS};
 use petgraph::{Directed, graphmap::GraphMap};
 use pid::Pid;
 use regex::Regex;
@@ -185,29 +186,42 @@ fn animate_textures(
     }
 }
 
-fn get_packed_files() -> Result<Vec<PathBuf>> {
+#[derive(Parser, Debug)]
+#[command(author, version, about, long_about = None)]
+struct Cli {
+    /// Scrapland installation directory (auto-detected if not provided)
+    #[arg(short, long, default_value="<auto-detected>")]
+    scrapland: PathBuf,
+
+    /// Path to a level folder (e.g., Levels/Outskirts) or model file to export
+    #[arg(short, long)]
+    path: Option<String>,
+
+    /// Output file path for the export (default: dump.zip)
+    #[arg(short, long)]
+    output: Option<PathBuf>,
+
+    /// Run in export-only mode (no GUI)
+    #[arg(short, long, default_value_t = false)]
+    export_only: bool,
+}
+
+fn run_export(fs: &MultiPackFS, path: &str, output_path: &PathBuf) -> Result<()> {
+    let vfs_path = fs
+        .fs
+        .root()
+        .join(path)
+        .map_err(|e| color_eyre::eyre::anyhow!("Invalid path: {}", e))?;
+
+    let level = Level::load(&vfs_path)?;
+
+    export::export_level(fs, &level, output_path)?;
+
+    Ok(())
+}
+
+fn get_packed_files(scrap_path: &Path) -> Result<Vec<PathBuf>> {
     let data_regex = Regex::new(r"[Dd]ata\d*\.packed")?;
-    let scrap_path = match find_scrap::get_path() {
-        Ok(path) => path,
-        Err(err) => {
-            let err_msg = format!("{err}");
-            rfd::MessageDialog::new()
-                .set_title(err_msg)
-                .set_description("Please locate the Scrapland installation folder manually")
-                .set_buttons(rfd::MessageButtons::Ok)
-                .set_level(rfd::MessageLevel::Warning)
-                .show();
-            {
-                let Some(folder) = rfd::FileDialog::new()
-                    .set_title("Scrapland installation folder")
-                    .pick_folder() else
-                {
-                    std::process::exit(1);
-                };
-                folder
-            }
-        }
-    };
     let packed_files: Vec<PathBuf> = parser::find_packed(scrap_path)
         .context("Failed to find .packed files")?
         .into_iter()
@@ -333,7 +347,31 @@ fn find_numeric_null_candidates(json: &str, limit: usize) -> Vec<String> {
 
 fn main() -> Result<()> {
     color_eyre::install()?;
-    let packed_files = get_packed_files()?;
+
+    let mut cli = Cli::parse();
+
+    if cli.scrapland==PathBuf::from("<auto-detected>") {
+        cli.scrapland = find_scrap::get_path();
+    }
+    let packed_files = get_packed_files(&cli.scrapland)?;
+    let fs = MultiPackFS::new(&packed_files)?;
+    
+    if let (Some(path), output) = (
+        &cli.path,
+        cli.output.unwrap_or_else(|| PathBuf::from("dump.zip")),
+    ) {
+        use bevy::log::tracing_subscriber;
+        tracing_subscriber::FmtSubscriber::builder().with_ansi(true).init();
+        if let Err(e) = run_export(&fs, path, &output) {
+            eprintln!("Export failed: {}", e);
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
+
+    return Ok(());
+
+    let packed_files = get_packed_files(&cli.scrapland)?;
     let fs = MultiPackFS::new(&packed_files)?;
     // for sm3_entry in &entries {
     //     if !sm3_entry.path.ends_with(".sm3") {
@@ -540,7 +578,7 @@ fn main() -> Result<()> {
         fs,
         browser_tree: None,
         browser_tree_error: None,
-        data_path: std::env::args().nth(1),
+        data_path: cli.path,
         picked_object: None,
         data: None,
         show_ui: true,
@@ -3282,9 +3320,9 @@ impl CameraBundle {
                 )
                 .with_axis(
                     DroneAction::Pitch,
-                    MouseMoveAxis::Y.sensitivity(0.5).inverted(),
+                    MouseMoveAxis::Y.sensitivity(0.75).inverted(),
                 )
-                .with_axis(DroneAction::Yaw, MouseMoveAxis::X.sensitivity(0.5))
+                .with_axis(DroneAction::Yaw, MouseMoveAxis::X.sensitivity(0.75))
                 .with(DroneAction::Boost, GamepadButton::RightTrigger)
                 .with(DroneAction::Boost, MouseButton::Right)
                 .with(DroneAction::TurnBoost, GamepadButton::LeftTrigger)
