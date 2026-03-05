@@ -1,6 +1,14 @@
-use crate::parser::{Level, ParsedData, multi_pack_fs::MultiPackFS, resolve_dep};
-use bevy::log::tracing::{error, info, warn};
-use bevy::prelude::ResMut;
+use std::{
+    collections::HashMap,
+    io::{BufWriter, Cursor, Read, Write},
+    path::{Path, PathBuf},
+    sync::Arc,
+};
+
+use bevy::{
+    log::tracing::{error, info, warn},
+    prelude::ResMut,
+};
 use color_eyre::eyre::{Result, bail};
 use crossbeam_channel::{Receiver, Sender};
 use dds::{
@@ -9,15 +17,13 @@ use dds::{
 };
 use flate2::{Compression, Status};
 use image::{DynamicImage, GenericImage, GenericImageView, ImageFormat, Rgba, RgbaImage};
-use std::{
-    collections::HashMap,
-    io::{BufWriter, Cursor, Read, Write},
-    path::{Path, PathBuf},
-    sync::Arc,
-};
 use zip::write::SimpleFileOptions;
 
-use crate::State;
+use crate::{
+    State,
+    parser::{Level, ParsedData, multi_pack_fs::MultiPackFS, resolve_dep},
+    pixel_shader,
+};
 
 fn compress_image_from_bytes(
     data: &[u8],
@@ -143,7 +149,9 @@ fn export_worker(
         };
 
         if !png_data.is_empty() {
-            let (dst_path, _) = dst_zip_path.rsplit_once('.').unwrap_or((&dst_zip_path, "png"));
+            let (dst_path, _) = dst_zip_path
+                .rsplit_once('.')
+                .unwrap_or((&dst_zip_path, "png"));
             let dst_path = format!("tex/{dst_path}.png");
             let _ = tx.send((dst_path, png_data));
         }
@@ -160,10 +168,12 @@ pub fn export_level(fs: &MultiPackFS, lvl: &Level, output_path: &Path) -> Result
         let fs = fs.clone();
         let (job_tx, job_rx) = crossbeam_channel::unbounded();
         let (res_tx, res_rx) = crossbeam_channel::bounded(ncpus);
-        let handles: Vec<_> = (0..ncpus).map(move |_| {
-            let (fs, rx, tx) = (fs.clone(), job_rx.clone(), res_tx.clone());
-            std::thread::spawn(move || export_worker(fs, rx, tx))
-        }).collect();
+        let handles: Vec<_> = (0..ncpus)
+            .map(move |_| {
+                let (fs, rx, tx) = (fs.clone(), job_rx.clone(), res_tx.clone());
+                std::thread::spawn(move || export_worker(fs, rx, tx))
+            })
+            .collect();
         (job_tx, res_rx, handles)
     };
 
@@ -211,6 +221,14 @@ pub fn export_level(fs: &MultiPackFS, lvl: &Level, output_path: &Path) -> Result
     zf.start_file("level.json.gz", opts)?;
     let mut comp = flate2::write::GzEncoder::new(Vec::new(), Compression::best());
     serde_json::to_writer(&mut comp, lvl)?;
+    let data = comp.finish()?;
+    zf.write_all(&data)?;
+
+    zf.start_file("shaders.json.gz", opts)?;
+    let mut comp = flate2::write::GzEncoder::new(Vec::new(), Compression::best());
+    let shader_info =
+        pixel_shader::analyze_level_material_shaders(&lvl.emi.materials, Path::new("shaders"))?;
+    serde_json::to_writer(&mut comp, &shader_info)?;
     let data = comp.finish()?;
     zf.write_all(&data)?;
 

@@ -190,7 +190,7 @@ fn animate_textures(
 #[command(author, version, about, long_about = None)]
 struct Cli {
     /// Scrapland installation directory (auto-detected if not provided)
-    #[arg(short, long, default_value="<auto-detected>")]
+    #[arg(short, long, default_value = "<auto-detected>")]
     scrapland: PathBuf,
 
     /// Path to a level folder (e.g., Levels/Outskirts) or model file to export
@@ -350,18 +350,20 @@ fn main() -> Result<()> {
 
     let mut cli = Cli::parse();
 
-    if cli.scrapland==PathBuf::from("<auto-detected>") {
+    if cli.scrapland == PathBuf::from("<auto-detected>") {
         cli.scrapland = find_scrap::get_path();
     }
     let packed_files = get_packed_files(&cli.scrapland)?;
     let fs = MultiPackFS::new(&packed_files)?;
-    
+
     if let (Some(path), output) = (
         &cli.path,
         cli.output.unwrap_or_else(|| PathBuf::from("dump.zip")),
     ) {
         use bevy::log::tracing_subscriber;
-        tracing_subscriber::FmtSubscriber::builder().with_ansi(true).init();
+        tracing_subscriber::FmtSubscriber::builder()
+            .with_ansi(true)
+            .init();
         if let Err(e) = run_export(&fs, path, &output) {
             eprintln!("Export failed: {}", e);
             std::process::exit(1);

@@ -3,6 +3,7 @@ import bpy
 import bmesh
 import zipfile
 import typing
+import gzip
 from pathlib import Path
 import json
 import numpy as np
@@ -68,6 +69,10 @@ class DataReader(object):
     def read_json(self) -> Any:
         return json.loads(self.path.read_text())
 
+    def read_json_gz(self) -> Any:
+        data = gzip.decompress(self.path.read_bytes())
+        return json.loads(data.decode("utf-8"))
+
     def iterdir(self, recursive=False) -> typing.Iterator["DataReader"]:
         for entry in self.path.iterdir():
             yield DataReader(entry)
@@ -93,6 +98,7 @@ objects_info: dict[Any, Any] = {}
 root = DataReader.open(Path(zip_path))
 images = {}
 materials = {}
+shader_graphs = {}
 
 def rgba(*,red: float, green: float, blue: float, alpha: float) -> tuple[float, float, float, float]:
     return (red,green,blue,alpha)
@@ -100,7 +106,117 @@ def rgba(*,red: float, green: float, blue: float, alpha: float) -> tuple[float, 
 def get_socket(sockets, name, dtype):
     return list(filter(lambda i: (i.type, i.name) == (dtype, name), sockets))
 
-#TODO: crate material nodes
+def shader_image_for_register(shader_info: dict[str, Any], material_info: dict[str, Any], register: str):
+    register = register.lower()
+    semantic = None
+    for input_info in shader_info.get("inputs", []):
+        if input_info.get("register", "").lower() == register:
+            semantic = input_info.get("semantic", "").lower()
+            break
+
+    key_by_semantic = {
+        "diffuse": "tex:diffuse",
+        "env": "tex:reflection",
+        "glow": "tex:glow",
+        "bump": "tex:bump",
+        "lightmap": "lm1",
+    }
+    if semantic:
+        for token, key in key_by_semantic.items():
+            if token in semantic and key in material_info:
+                return material_info.get(key)
+    return None
+
+def make_math_node(nodes, op: str):
+    node = nodes.new("ShaderNodeVectorMath")
+    op = op.lower()
+    if op == "add":
+        node.operation = "ADD"
+    elif op == "sub":
+        node.operation = "SUBTRACT"
+    elif op == "mul":
+        node.operation = "MULTIPLY"
+    elif op == "dp3":
+        node.operation = "DOT_PRODUCT"
+    else:
+        node.operation = "ADD"
+    return node
+
+def build_expression_nodes(node_tree, shader_info: dict[str, Any], material_info: dict[str, Any]):
+    expr = shader_info.get("expression_tree")
+    if not expr:
+        return None
+
+    nodes = node_tree.nodes
+    links = node_tree.links
+    built: dict[int, bpy.types.Node] = {}
+    node_defs = {n["id"]: n for n in expr.get("nodes", [])}
+
+    def resolve(node_id: int):
+        if node_id in built:
+            return built[node_id]
+
+        node_def = node_defs[node_id]
+        kind = node_def.get("kind")
+
+        if kind == "input":
+            register = node_def["register"].lower()
+            if register.startswith("t"):
+                tex = nodes.new("ShaderNodeTexImage")
+                img = shader_image_for_register(shader_info, material_info, register)
+                if img is not None:
+                    tex.image = img
+                built[node_id] = tex
+                return tex
+            rgb = nodes.new("ShaderNodeRGB")
+            rgb.outputs[0].default_value = (1.0, 1.0, 1.0, 1.0)
+            built[node_id] = rgb
+            return rgb
+
+        if kind == "operation":
+            args = node_def.get("args", [])
+            op = node_def.get("op", "add")
+            if op == "tex" and args:
+                built[node_id] = resolve(args[0])
+                return built[node_id]
+            if op == "mad" and len(args) >= 3:
+                mul_node = make_math_node(nodes, "mul")
+                add_node = make_math_node(nodes, "add")
+                a = resolve(args[0])
+                b = resolve(args[1])
+                c = resolve(args[2])
+                links.new(a.outputs[0], mul_node.inputs[0])
+                links.new(b.outputs[0], mul_node.inputs[1])
+                links.new(mul_node.outputs[0], add_node.inputs[0])
+                links.new(c.outputs[0], add_node.inputs[1])
+                built[node_id] = add_node
+                return add_node
+
+            op_node = make_math_node(nodes, op)
+            if args:
+                a = resolve(args[0])
+                links.new(a.outputs[0], op_node.inputs[0])
+            if len(args) > 1:
+                b = resolve(args[1])
+                links.new(b.outputs[0], op_node.inputs[1])
+            built[node_id] = op_node
+            return op_node
+
+        if kind in ("swizzle", "modifier", "negate", "merge"):
+            source_id = node_def.get("input")
+            if source_id is None:
+                source_id = node_def.get("value", node_def.get("base"))
+            built[node_id] = resolve(source_id)
+            return built[node_id]
+
+        rgb = nodes.new("ShaderNodeRGB")
+        built[node_id] = rgb
+        return rgb
+
+    output_id = expr.get("outputs", {}).get("r0")
+    if output_id is None:
+        return None
+    return resolve(output_id)
 
 @typing.no_type_check
 def build_material(root: DataReader, name: str, attrs: dict) -> bpy.types.Material:
@@ -129,6 +245,17 @@ def build_material(root: DataReader, name: str, attrs: dict) -> bpy.types.Materi
         img_node.image = info[active_ligmap[0]]
     uv_map = nodes.new("ShaderNodeUVMap")
     uv_map.uv_map = "lightmap"
+
+    shader_info = shader_graphs.get(name)
+    if shader_info:
+        out = nodes.get("Material Output")
+        shader_node = build_expression_nodes(mat.node_tree, shader_info, info)
+        if shader_node is not None:
+            try:
+                mat.node_tree.links.new(shader_node.outputs[0], bsdf.inputs["Base Color"])
+                mat.node_tree.links.new(shader_node.outputs[0], bsdf.inputs["Emission Color"])
+            except Exception as exc:
+                print("Shader node wiring failed:", name, exc)
     return mat
 
 
@@ -153,6 +280,17 @@ for mat in root["mat"].iterdir():
     print("MAT:", mat.stem)
     mat_info = mat.read_json()
     materials[mat.stem.removesuffix(".png")] = mat_info
+
+try:
+    shader_entries = root["shaders.json.gz"].read_json_gz()
+    shader_graphs = {
+        entry.get("material_name"): entry
+        for entry in shader_entries
+        if entry.get("material_name")
+    }
+    print("Loaded shader graphs:", len(shader_graphs))
+except Exception as exc:
+    print("No shader graph payload found:", exc)
 
 for obj in root["obj"].iterdir():
     # print("OBJ:", obj.name)
