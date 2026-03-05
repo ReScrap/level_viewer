@@ -1,133 +1,110 @@
-from typing import Any
-import bpy
-import bmesh
-import zipfile
-import typing
-import gzip
-from pathlib import Path
-import json
-import numpy as np
-from dataclasses import dataclass
+from __future__ import annotations
 
+import gzip
+import json
 import sys
+import zipfile
+from pathlib import Path, PurePosixPath
+from typing import Any
+
+import bpy
+
 
 bpy.ops.wm.read_factory_settings(use_empty=True)
+
 
 def excepthook(exc_type, exc_value, exc_traceback):
     sys.__excepthook__(exc_type, exc_value, exc_traceback)
     exit(1)
 
-sys.excepthook=excepthook
 
-@dataclass
-class MaterialInfo:
-    depth_bias: str
-    base_color: tuple
-    emissive: tuple
-    unlit: bool
-    alpha_mode: str
- 
-
-attr_map = {
-    "Vertex_Position": "pos",
-    "Vertex_Normal": "norm",
-    "Vertex_Color": "color",
-    "Vertex_Uv": "uv:default",
-    "Vertex_Uv_1": "uv:lightmap",
-}
-
-dtype_map: dict[str, tuple[tuple[int, int], Any]] = {
-    "Float32x2": ((-1, 2), np.float32),
-    "Float32x3": ((-1, 3), np.float32),
-    "Float32x4": ((-1, 4), np.float32),
-}
-idx_map: dict[str, tuple[tuple[int, int], Any]] = {
-    "IDX32": ((-1, 3), np.uint32),
-    "IDX16": ((-1, 3), np.uint16),
-}
+sys.excepthook = excepthook
 
 
-class DataReader(object):
-    path: zipfile.Path
+ZIP_PATH = Path(r"D:/devel/rust/bevy_test/dump.zip")
+WORLD_SCALE = 5000.0
 
-    @classmethod
-    def open(cls, path: Path) -> "DataReader":
-        return cls(zipfile.Path(path))
 
-    def __init__(self, path: zipfile.Path):
-        self.path = path
+def read_gzip_json(zf: zipfile.ZipFile, name: str) -> Any:
+    with zf.open(name, "r") as fh:
+        return json.loads(gzip.decompress(fh.read()).decode("utf-8"))
 
-    def __repr__(self) -> str:
-        return f"DataReader({self.path})"
 
-    def __getitem__(self, path: str) -> "DataReader":
-        return DataReader(self.path / path)
-    
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self.path, name)
+def rgba8_to_float(color: dict[str, Any] | None) -> tuple[float, float, float, float]:
+    if not color:
+        return (1.0, 1.0, 1.0, 1.0)
+    return (
+        float(color.get("r", 255)) / 255.0,
+        float(color.get("g", 255)) / 255.0,
+        float(color.get("b", 255)) / 255.0,
+        float(color.get("a", 255)) / 255.0,
+    )
 
-    def read_json(self) -> Any:
-        return json.loads(self.path.read_text())
 
-    def read_json_gz(self) -> Any:
-        data = gzip.decompress(self.path.read_bytes())
-        return json.loads(data.decode("utf-8"))
+def pascal_string(value: Any, default: str = "") -> str:
+    if isinstance(value, dict):
+        return str(value.get("string", default))
+    if value is None:
+        return default
+    return str(value)
 
-    def iterdir(self, recursive=False) -> typing.Iterator["DataReader"]:
-        for entry in self.path.iterdir():
-            yield DataReader(entry)
-            if recursive and entry.is_dir():
-                yield from DataReader(entry).iterdir(recursive)
-    
-    @property
-    def zip_path(self) -> str:
-        return str(self.path.filename.relative_to(self.path.root.filename))
 
-    def load_image(self) -> bpy.types.Image:
-        img_data = (self.path).read_bytes()
-        filename = self.zip_path
-        print("Loading image:", filename)
-        img = bpy.data.images.new(filename, 0, 0)
-        img.pack(data=img_data, data_len=len(img_data))
-        img.name = filename
-        img.source = "FILE"
-        return img
+def normalize_key(value: str) -> str:
+    return value.replace("\\", "/").strip().lower()
 
-zip_path =  r"D:/devel/rust/bevy_test/dump.zip"
-objects_info: dict[Any, Any] = {}
-root = DataReader.open(Path(zip_path))
-images = {}
-materials = {}
-shader_graphs = {}
 
-def rgba(*,red: float, green: float, blue: float, alpha: float) -> tuple[float, float, float, float]:
-    return (red,green,blue,alpha)
+def without_extension(path: str) -> str:
+    p = PurePosixPath(path.replace("\\", "/"))
+    if p.suffix:
+        p = p.with_suffix("")
+    return p.as_posix()
 
-def get_socket(sockets, name, dtype):
-    return list(filter(lambda i: (i.type, i.name) == (dtype, name), sockets))
 
-def shader_image_for_register(shader_info: dict[str, Any], material_info: dict[str, Any], register: str):
+def shader_image_for_register(
+    shader_info: dict[str, Any],
+    register: str,
+    role_images: dict[str, bpy.types.Image],
+) -> bpy.types.Image | None:
     register = register.lower()
-    semantic = None
-    for input_info in shader_info.get("inputs", []):
-        if input_info.get("register", "").lower() == register:
-            semantic = input_info.get("semantic", "").lower()
+    semantic = ""
+    for inp in shader_info.get("inputs", []):
+        if str(inp.get("register", "")).lower() == register:
+            semantic = str(inp.get("semantic", "")).lower()
             break
 
-    key_by_semantic = {
-        "diffuse": "tex:diffuse",
-        "env": "tex:reflection",
-        "glow": "tex:glow",
-        "bump": "tex:bump",
-        "lightmap": "lm1",
-    }
-    if semantic:
-        for token, key in key_by_semantic.items():
-            if token in semantic and key in material_info:
-                return material_info.get(key)
+    role_hints = [
+        ("diffuse", "diffuse"),
+        ("env", "reflection"),
+        ("reflection", "reflection"),
+        ("glow", "glow"),
+        ("bump", "bump"),
+        ("normal", "bump"),
+        ("lightmap", "lightmap"),
+        ("noise", "noise"),
+        ("scan", "scans"),
+    ]
+    for token, role in role_hints:
+        if token in semantic and role in role_images:
+            return role_images[role]
+
+    if register.startswith("t"):
+        try:
+            idx = int(register[1:])
+        except ValueError:
+            idx = -1
+        register_fallback = {
+            0: "diffuse",
+            1: "reflection",
+            2: "glow",
+            3: "lightmap",
+        }
+        role = register_fallback.get(idx)
+        if role and role in role_images:
+            return role_images[role]
     return None
 
-def make_math_node(nodes, op: str):
+
+def make_math_node(nodes: bpy.types.Nodes, op: str):
     node = nodes.new("ShaderNodeVectorMath")
     op = op.lower()
     if op == "add":
@@ -142,30 +119,38 @@ def make_math_node(nodes, op: str):
         node.operation = "ADD"
     return node
 
-def build_expression_nodes(node_tree, shader_info: dict[str, Any], material_info: dict[str, Any]):
+
+def build_expression_nodes(
+    node_tree: bpy.types.NodeTree,
+    shader_info: dict[str, Any],
+    role_images: dict[str, bpy.types.Image],
+):
     expr = shader_info.get("expression_tree")
-    if not expr:
+    if not isinstance(expr, dict):
+        return None
+
+    node_defs = {int(v["id"]): v for v in expr.get("nodes", []) if "id" in v}
+    output_id = expr.get("outputs", {}).get("r0")
+    if output_id is None:
         return None
 
     nodes = node_tree.nodes
     links = node_tree.links
     built: dict[int, bpy.types.Node] = {}
-    node_defs = {n["id"]: n for n in expr.get("nodes", [])}
 
     def resolve(node_id: int):
         if node_id in built:
             return built[node_id]
-
         node_def = node_defs[node_id]
-        kind = node_def.get("kind")
+        kind = str(node_def.get("kind", ""))
 
         if kind == "input":
-            register = node_def["register"].lower()
+            register = str(node_def.get("register", "")).lower()
             if register.startswith("t"):
                 tex = nodes.new("ShaderNodeTexImage")
-                img = shader_image_for_register(shader_info, material_info, register)
-                if img is not None:
-                    tex.image = img
+                image = shader_image_for_register(shader_info, register, role_images)
+                if image is not None:
+                    tex.image = image
                 built[node_id] = tex
                 return tex
             rgb = nodes.new("ShaderNodeRGB")
@@ -174,8 +159,8 @@ def build_expression_nodes(node_tree, shader_info: dict[str, Any], material_info
             return rgb
 
         if kind == "operation":
-            args = node_def.get("args", [])
-            op = node_def.get("op", "add")
+            args = [int(v) for v in node_def.get("args", [])]
+            op = str(node_def.get("op", "add"))
             if op == "tex" and args:
                 built[node_id] = resolve(args[0])
                 return built[node_id]
@@ -194,143 +179,237 @@ def build_expression_nodes(node_tree, shader_info: dict[str, Any], material_info
 
             op_node = make_math_node(nodes, op)
             if args:
-                a = resolve(args[0])
-                links.new(a.outputs[0], op_node.inputs[0])
+                links.new(resolve(args[0]).outputs[0], op_node.inputs[0])
             if len(args) > 1:
-                b = resolve(args[1])
-                links.new(b.outputs[0], op_node.inputs[1])
+                links.new(resolve(args[1]).outputs[0], op_node.inputs[1])
             built[node_id] = op_node
             return op_node
 
-        if kind in ("swizzle", "modifier", "negate", "merge"):
-            source_id = node_def.get("input")
-            if source_id is None:
-                source_id = node_def.get("value", node_def.get("base"))
-            built[node_id] = resolve(source_id)
+        passthrough_source = node_def.get("input")
+        if passthrough_source is None:
+            passthrough_source = node_def.get("value", node_def.get("base"))
+        if passthrough_source is not None:
+            built[node_id] = resolve(int(passthrough_source))
             return built[node_id]
 
         rgb = nodes.new("ShaderNodeRGB")
         built[node_id] = rgb
         return rgb
 
-    output_id = expr.get("outputs", {}).get("r0")
-    if output_id is None:
-        return None
-    return resolve(output_id)
+    return resolve(int(output_id))
 
-@typing.no_type_check
-def build_material(root: DataReader, name: str, attrs: dict) -> bpy.types.Material:
-    info = materials[name]
-    get_image = lambda key: key and (images.get(key) or images.get(f"{key}.png"))
-    for k,v in list(info.items()):
-        if isinstance(v,str) and k.startswith("tex:"):
-            info[k] = get_image(v)
-            if info[k] is None:
-                print("Warning: texture not found:", v)
-    active_ligmap = None
-    for k in ("lm1","lm2"):
-        if lightmap := attrs.get(k):
-            info[k] = get_image(lightmap)
-            active_ligmap = (k,lightmap)
-    print("Material info:", name, info, attrs)
-    mat = bpy.data.materials.new(name=name)
-    mat.use_nodes = True
-    nodes = mat.node_tree.nodes
-    bsdf = nodes["Principled BSDF"]
-    bsdf.inputs["Base Color"].default_value = rgba(**info["base_color"])
-    bsdf.inputs["Emission Color"].default_value = rgba(**info["emissive"])
-    if active_ligmap:
-        img_node = nodes.new("ShaderNodeTexImage")
-        img_node.name = active_ligmap[1]
-        img_node.image = info[active_ligmap[0]]
-    uv_map = nodes.new("ShaderNodeUVMap")
-    uv_map.uv_map = "lightmap"
 
-    shader_info = shader_graphs.get(name)
+def get_vertex_data(tri_data: dict[str, Any]) -> list[dict[str, Any]]:
+    geom = tri_data.get("geometry_verts") or {}
+    geom_inner = geom.get("inner") if isinstance(geom, dict) else None
+    if isinstance(geom_inner, dict) and isinstance(geom_inner.get("data"), list):
+        return geom_inner["data"]
+    lm = tri_data.get("lightmap_verts") or {}
+    lm_inner = lm.get("inner") if isinstance(lm, dict) else None
+    if isinstance(lm_inner, dict) and isinstance(lm_inner.get("data"), list):
+        return lm_inner["data"]
+    return []
+
+
+def uv_from_vertex(vertex: dict[str, Any], field: str) -> tuple[float, float] | None:
+    tex = vertex.get(field)
+    if isinstance(tex, list) and tex and isinstance(tex[0], list) and len(tex[0]) >= 2:
+        return (float(tex[0][0]), 1.0 - float(tex[0][1]))
+    return None
+
+
+def build_material(
+    mat_key: int,
+    mat_data: dict[str, Any],
+    shader_info: dict[str, Any] | None,
+    role_images: dict[str, bpy.types.Image],
+) -> bpy.types.Material:
+    mat_name = pascal_string(mat_data.get("name"), default=f"MAT:{mat_key}")
+    material = bpy.data.materials.new(name=mat_name)
+    material.use_nodes = True
+
+    node_tree = material.node_tree
+    assert node_tree is not None
+    nodes = node_tree.nodes
+    links = node_tree.links
+
+    bsdf = nodes.get("Principled BSDF")
+    if bsdf is None:
+        return material
+
+    bsdf.inputs["Base Color"].default_value = rgba8_to_float(mat_data.get("diffuse"))
+    bsdf.inputs["Emission Color"].default_value = rgba8_to_float(mat_data.get("glow"))
+
+    if "diffuse" in role_images:
+        tex = nodes.new("ShaderNodeTexImage")
+        tex.image = role_images["diffuse"]
+        links.new(tex.outputs["Color"], bsdf.inputs["Base Color"])
+        if tex.outputs.get("Alpha") is not None:
+            links.new(tex.outputs["Alpha"], bsdf.inputs["Alpha"])
+
+    if "glow" in role_images:
+        tex = nodes.new("ShaderNodeTexImage")
+        tex.image = role_images["glow"]
+        links.new(tex.outputs["Color"], bsdf.inputs["Emission Color"])
+
+    if "bump" in role_images:
+        tex = nodes.new("ShaderNodeTexImage")
+        tex.image = role_images["bump"]
+        normal = nodes.new("ShaderNodeNormalMap")
+        links.new(tex.outputs["Color"], normal.inputs["Color"])
+        links.new(normal.outputs["Normal"], bsdf.inputs["Normal"])
+
+    if "reflection" in role_images:
+        tex = nodes.new("ShaderNodeTexImage")
+        tex.image = role_images["reflection"]
+        links.new(tex.outputs["Color"], bsdf.inputs["Metallic"])
+
     if shader_info:
-        out = nodes.get("Material Output")
-        shader_node = build_expression_nodes(mat.node_tree, shader_info, info)
+        shader_node = build_expression_nodes(node_tree, shader_info, role_images)
         if shader_node is not None:
             try:
-                mat.node_tree.links.new(shader_node.outputs[0], bsdf.inputs["Base Color"])
-                mat.node_tree.links.new(shader_node.outputs[0], bsdf.inputs["Emission Color"])
+                links.new(shader_node.outputs[0], bsdf.inputs["Base Color"])
+                links.new(shader_node.outputs[0], bsdf.inputs["Emission Color"])
             except Exception as exc:
-                print("Shader node wiring failed:", name, exc)
-    return mat
+                print(f"Shader node wiring failed for '{mat_name}': {exc}")
+
+    return material
 
 
-for lightmap in root["lightmaps"].iterdir():
-    if  not lightmap.is_file():
-        continue
-    key=lightmap.zip_path.replace("\\","/").split("/",1)[1].removesuffix(".png")
-    images[key] = lightmap.load_image()
+def load_image_from_zip(zf: zipfile.ZipFile, zip_member: str) -> bpy.types.Image:
+    data = zf.read(zip_member)
+    image = bpy.data.images.new(zip_member, 0, 0)
+    image.pack(data=data, data_len=len(data))
+    image.name = zip_member
+    image.source = "FILE"
+    return image
 
-for tex in root["tex"].iterdir(True):
-    if not tex.is_file():
-        continue
-    print("Tex:",tex.zip_path)
-    key=tex.zip_path.replace("\\","/").split("/",1)[1].removesuffix(".png")
-    images[key] = tex.load_image()
 
-print(images.keys())
+def main() -> None:
+    with zipfile.ZipFile(ZIP_PATH, "r") as zf:
+        names = set(zf.namelist())
 
-for mat in root["mat"].iterdir():
-    if not mat.is_file():
-        continue
-    print("MAT:", mat.stem)
-    mat_info = mat.read_json()
-    materials[mat.stem.removesuffix(".png")] = mat_info
+        level = read_gzip_json(zf, "level.json.gz")
+        textures_map: dict[str, Any] = read_gzip_json(zf, "textures.json.gz")
+        shader_entries = read_gzip_json(zf, "shaders.json.gz") if "shaders.json.gz" in names else []
 
-try:
-    shader_entries = root["shaders.json.gz"].read_json_gz()
-    shader_graphs = {
-        entry.get("material_name"): entry
-        for entry in shader_entries
-        if entry.get("material_name")
+        shader_by_material_key: dict[int, dict[str, Any]] = {}
+        for entry in shader_entries:
+            if isinstance(entry, dict) and isinstance(entry.get("material_key"), int):
+                shader_by_material_key[int(entry["material_key"])] = entry
+
+        images_by_texture_key: dict[str, bpy.types.Image] = {}
+        for texture_key in textures_map.keys():
+            if not isinstance(texture_key, str):
+                continue
+            tex_rel = f"tex/{without_extension(texture_key)}.png"
+            if tex_rel in names:
+                images_by_texture_key[normalize_key(texture_key)] = load_image_from_zip(zf, tex_rel)
+
+        for member in names:
+            if not member.startswith("tex/") or not member.endswith(".png"):
+                continue
+            norm_rel = normalize_key(member[len("tex/") : -len(".png")])
+            if norm_rel not in images_by_texture_key:
+                images_by_texture_key[norm_rel] = load_image_from_zip(zf, member)
+
+    materials_list = level["emi"]["materials"]
+    materials_by_key: dict[int, dict[str, Any]] = {
+        int(item[0]): item[1] for item in materials_list if isinstance(item, list) and len(item) == 2
     }
-    print("Loaded shader graphs:", len(shader_graphs))
-except Exception as exc:
-    print("No shader graph payload found:", exc)
 
-for obj in root["obj"].iterdir():
-    # print("OBJ:", obj.name)
-    objects_info[obj.name] = {}
-    for attr in obj.iterdir():
-        if idx := idx_map.get(attr.name):
-            shape, dtype = idx
-            data = np.frombuffer(attr.read_bytes(), dtype=dtype)
-            data = data.reshape(shape)
-            objects_info[obj.name]["idx"] = data
-        elif "." in attr.name:
-            name, dtype = attr.name.split(".", 1)
-            name = attr_map[name]
-            shape, dtype = dtype_map[dtype]
-            data = np.frombuffer(attr.read_bytes(), dtype=dtype)
-            data = data.reshape(shape)
-            objects_info[obj.name][name] = data
-        elif attr.name.startswith("_"):
-            objects_info[obj.name][attr.name[1:]] = attr.read_text()
+    lightmap_by_map_key: dict[int, tuple[str, str]] = {}
+    for map_entry in level["emi"].get("maps", []):
+        key = map_entry.get("key")
+        data = map_entry.get("data")
+        if not isinstance(key, int) or not isinstance(data, list) or len(data) != 3:
+            continue
+        lightmap_by_map_key[key] = (pascal_string(data[0]), pascal_string(data[2]))
 
-for name, attrs in objects_info.items():
-    # print("Creating mesh:", name)
-    # print("Lightmaps:", attrs.get("lm1"), attrs.get("lm2"))
-    me = bpy.data.meshes.new(name)
-    attrs["pos"] = attrs["pos"][:,[0,2,1]]
-    me.from_pydata(attrs["pos"] / 5000.0, [], attrs["idx"])
-    tex_uv = me.uv_layers.new(name="tex")
-    lightmap_uv = me.uv_layers.new(name="lightmap")
-    for i,loop in enumerate(me.loops):
-        if "uv:default" in attrs:
-            tex_uv.data[i].uv = attrs["uv:default"][loop.vertex_index]
-        if "uv:lightmap" in attrs:
-            u,v = attrs["uv:lightmap"][loop.vertex_index]
-            lightmap_uv.data[i].uv = (u, 1.0-v)
-    ob = bpy.data.objects.new(name, me)
-    if mat := attrs.get("mat"):
-        ob.active_material = build_material(root, mat, attrs)
-    assert bpy.context.scene is not None
-    bpy.context.scene.collection.objects.link(ob)
+    material_cache: dict[tuple[int, int], bpy.types.Material] = {}
 
-bpy.ops.file.pack_all()
+    for tri in level["emi"].get("tri", []):
+        tri_name = pascal_string(tri.get("name"), default="mesh")
+        tri_data = tri.get("data", {})
+        faces = tri_data.get("tris", [])
+        vertices_data = get_vertex_data(tri_data)
+        if not vertices_data or not faces:
+            continue
 
-bpy.ops.wm.save_as_mainfile(filepath="blender_import.blend", compress=True)
+        vertices = []
+        for v in vertices_data:
+            xyz = v.get("xyz")
+            if not isinstance(xyz, list) or len(xyz) < 3:
+                continue
+            x = float(xyz[0]) / WORLD_SCALE
+            y = float(xyz[2]) / WORLD_SCALE
+            z = float(xyz[1]) / WORLD_SCALE
+            vertices.append((x, y, z))
+        if len(vertices) < 3:
+            continue
+
+        mesh = bpy.data.meshes.new(tri_name)
+        mesh.from_pydata(vertices, [], [tuple(face) for face in faces])
+
+        uv_tex = mesh.uv_layers.new(name="tex")
+        uv_lm = mesh.uv_layers.new(name="lightmap")
+        for i, loop in enumerate(mesh.loops):
+            vtx = vertices_data[loop.vertex_index]
+            uv0 = uv_from_vertex(vtx, "tex_0")
+            if uv0 is not None:
+                uv_tex.data[i].uv = uv0
+            uv1 = uv_from_vertex(vtx, "tex_1")
+            if uv1 is not None:
+                uv_lm.data[i].uv = uv1
+
+        obj = bpy.data.objects.new(tri_name, mesh)
+
+        mat_key = int(tri_data.get("mat_key", 0))
+        map_key = int(tri_data.get("map_key", 0))
+        cache_key = (mat_key, map_key)
+        if cache_key not in material_cache and mat_key in materials_by_key:
+            mat_data = materials_by_key[mat_key]
+            maps = mat_data.get("maps", [])
+
+            role_images: dict[str, bpy.types.Image] = {}
+            role_to_idx = {
+                "diffuse": 0,
+                "metallic": 1,
+                "reflection": 2,
+                "bump": 3,
+                "glow": 4,
+            }
+            for role, idx in role_to_idx.items():
+                if idx >= len(maps) or not isinstance(maps[idx], dict):
+                    continue
+                map_tex = maps[idx].get("texture")
+                tex_name = pascal_string(map_tex)
+                if not tex_name:
+                    continue
+                image = images_by_texture_key.get(normalize_key(tex_name))
+                if image is not None:
+                    role_images[role] = image
+
+            if map_key in lightmap_by_map_key:
+                lm1, lm2 = lightmap_by_map_key[map_key]
+                lm_img = images_by_texture_key.get(normalize_key(lm1))
+                if lm_img is None:
+                    lm_img = images_by_texture_key.get(normalize_key(lm2))
+                if lm_img is not None:
+                    role_images["lightmap"] = lm_img
+
+            shader_info = shader_by_material_key.get(mat_key)
+            material_cache[cache_key] = build_material(mat_key, mat_data, shader_info, role_images)
+
+        if cache_key in material_cache:
+            obj.active_material = material_cache[cache_key]
+
+        assert bpy.context.scene is not None
+        bpy.context.scene.collection.objects.link(obj)
+
+    bpy.ops.file.pack_all()
+    bpy.ops.wm.save_as_mainfile(filepath="blender_import.blend", compress=True)
+
+
+if __name__ == "__main__":
+    main()

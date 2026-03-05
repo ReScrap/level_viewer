@@ -226,8 +226,7 @@ pub fn export_level(fs: &MultiPackFS, lvl: &Level, output_path: &Path) -> Result
 
     zf.start_file("shaders.json.gz", opts)?;
     let mut comp = flate2::write::GzEncoder::new(Vec::new(), Compression::best());
-    let shader_info =
-        pixel_shader::analyze_level_material_shaders(&lvl.emi.materials, Path::new("shaders"))?;
+    let shader_info = pixel_shader::analyze_level_material_shaders_from_fs(&lvl.emi.materials, fs.as_ref())?;
     serde_json::to_writer(&mut comp, &shader_info)?;
     let data = comp.finish()?;
     zf.write_all(&data)?;
