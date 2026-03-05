@@ -7,32 +7,32 @@ use std::{
     sync::Arc,
 };
 
-use bevy::tasks::futures_lite::{AsyncRead, AsyncSeek};
-use binrw::{BinReaderExt, io::BufReader};
-use color_eyre::eyre::{Context, Result, anyhow, bail};
+use binrw::{io::BufReader, BinReaderExt};
+use color_eyre::eyre::{anyhow, bail, Context, Result};
 use fs_err as fs;
+use futures_lite::{AsyncRead, AsyncSeek};
 use memmap2::Mmap;
 use serde::Serialize;
-use vfs::{FileSystem, SeekAndWrite, VfsMetadata, error::VfsErrorKind};
+use vfs::{error::VfsErrorKind, FileSystem, SeekAndWrite, VfsMetadata};
 
 use crate::parser::{PackedEntry, PackedHeader};
 
 #[derive(Debug)]
-pub(crate) struct PackedFile {
+pub struct PackedFile {
     _fh: fs::File,
     mm: Arc<Mmap>,
     _path: PathBuf,
 }
 
 #[derive(Debug)]
-pub(crate) struct MultiPack {
+pub struct MultiPack {
     files: Vec<PackedFile>,
-    pub(crate) tree: DirectoryTree,
+    pub tree: DirectoryTree,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type")]
-pub(crate) enum DirectoryTree {
+pub enum DirectoryTree {
     File {
         data: Range<usize>,
         file_index: usize,
@@ -79,7 +79,7 @@ impl MultiPack {
         })
     }
 
-    pub(crate) fn get_file(&self, path: &str) -> vfs::VfsResult<FileHandle> {
+    pub fn get_file(&self, path: &str) -> vfs::VfsResult<FileHandle> {
         match self.tree.get_entry(path)? {
             DirectoryTree::File { data, file_index } => {
                 let Some(file) = self.files.get(*file_index) else {
@@ -150,7 +150,7 @@ impl DirectoryTree {
         }
     }
 
-    pub(crate) fn get_entry(&self, path: &str) -> vfs::VfsResult<&Self> {
+    pub fn get_entry(&self, path: &str) -> vfs::VfsResult<&Self> {
         let mut path = path.to_ascii_lowercase();
         if !path.starts_with('/') {
             path = "/".to_owned() + &path;
@@ -184,14 +184,14 @@ impl DirectoryTree {
 }
 
 #[derive(Debug)]
-pub(crate) struct FileHandle {
+pub struct FileHandle {
     _mm: Arc<Mmap>,
     cursor: Cursor<Arc<[u8]>>,
     data: Range<usize>,
 }
 
 impl FileHandle {
-    pub(crate) fn get<'a>(&'a self) -> &'a [u8] {
+    pub fn get<'a>(&'a self) -> &'a [u8] {
         let b = self.cursor.get_ref();
         &b[self.data.clone()]
     }
@@ -230,22 +230,11 @@ impl AsyncRead for FileHandle {
 impl AsyncSeek for FileHandle {
     fn poll_seek(
         self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
+        _cx: &mut std::task::Context<'_>,
         pos: SeekFrom,
     ) -> std::task::Poll<std::io::Result<u64>> {
         let fh = self.get_mut();
         std::task::Poll::Ready(fh.cursor.seek(pos))
-    }
-}
-
-impl bevy::asset::io::Reader for FileHandle {
-    fn seekable(
-        &mut self,
-    ) -> std::result::Result<
-        &mut dyn bevy::asset::io::SeekableReader,
-        bevy::asset::io::ReaderNotSeekableError,
-    > {
-        Ok(self)
     }
 }
 

@@ -6,6 +6,9 @@ edition = "2024"
 repository = "https://github.com/ReScrap/level_viewer"
 description = "A level viewer for the game American McGee's Scrapland"
 
+[workspace]
+members = [".", "crates/scrap_parser"]
+
 [package.metadata.wix]
 upgrade-guid = "4310959D-45C3-45D3-B8A0-3B36BFAFEF85"
 path-guid = "B9FD19DB-FADE-4BE5-BCCE-5AE3B34FD269"
@@ -77,3 +80,5 @@ serde_path_to_error = "0.1.20"
 dds = "0.2.0"
 flate2 = "1.1.9"
 crossbeam-channel = "0.5.15"
+glob = "0.3.3"
+scrap_parser = { path = "crates/scrap_parser" }

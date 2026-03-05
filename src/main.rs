@@ -6,7 +6,6 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use asset_loader::PackedAssetRepositoryPlugin;
 use bevy::{
     anti_alias::{
         contrast_adaptive_sharpening::ContrastAdaptiveSharpening, taa::TemporalAntiAliasing,
@@ -57,26 +56,25 @@ use color_eyre::eyre::{Context, Result, anyhow, bail};
 use configparser::ini::Ini;
 use itertools::Itertools;
 use num_traits::Float;
-use packed_vfs::MultiPack;
-use parser::{Data, Level, NodeData, Vertex, multi_pack_fs::MultiPackFS};
 use petgraph::{Directed, graphmap::GraphMap};
 use pid::Pid;
 use regex::Regex;
 use rhexdump::{rhexdump, rhexdumps};
+use scrap_parser::{
+    parser::{
+        self, AniTrackType, AnimTracks, CM3, Data, Level, LightType, NodeData, ParsedData, SM3,
+        Vertex, multi_pack_fs::MultiPackFS,
+    },
+};
 use serde::{Deserialize, Serialize};
 
 use crate::{
     // materials::Hologram,
-    asset_loader::TestAsset,
     materials::TestMaterial,
-    parser::{AniTrackType, AnimTracks, CM3, LightType, ParsedData, SM3},
 };
-mod asset_loader;
 mod export;
 mod find_scrap;
 mod materials;
-mod packed_vfs;
-mod parser;
 mod pixel_shader;
 
 type ScrapMaterial = ExtendedMaterial<StandardMaterial, TestMaterial>;
@@ -190,7 +188,7 @@ fn animate_textures(
 #[command(author, version, about, long_about = None)]
 struct Cli {
     /// Scrapland installation directory (auto-detected if not provided)
-    #[arg(short, long, default_value="<auto-detected>")]
+    #[arg(short, long, default_value = "<auto-detected>")]
     scrapland: PathBuf,
 
     /// Path to a level folder (e.g., Levels/Outskirts) or model file to export
@@ -350,25 +348,26 @@ fn main() -> Result<()> {
 
     let mut cli = Cli::parse();
 
-    if cli.scrapland==PathBuf::from("<auto-detected>") {
+    if cli.scrapland == PathBuf::from("<auto-detected>") {
         cli.scrapland = find_scrap::get_path();
     }
     let packed_files = get_packed_files(&cli.scrapland)?;
     let fs = MultiPackFS::new(&packed_files)?;
-    
+
     if let (Some(path), output) = (
         &cli.path,
         cli.output.unwrap_or_else(|| PathBuf::from("dump.zip")),
     ) {
         use bevy::log::tracing_subscriber;
-        tracing_subscriber::FmtSubscriber::builder().with_ansi(true).init();
+        tracing_subscriber::FmtSubscriber::builder()
+            .with_ansi(true)
+            .init();
         if let Err(e) = run_export(&fs, path, &output) {
             eprintln!("Export failed: {}", e);
             std::process::exit(1);
         }
         return Ok(());
     }
-
     return Ok(());
 
     let packed_files = get_packed_files(&cli.scrapland)?;
@@ -605,7 +604,6 @@ fn main() -> Result<()> {
         .insert_resource(EguiTexHandles::default())
         .insert_resource(state)
         .add_plugins((
-            PackedAssetRepositoryPlugin::new(MultiPack::load_all(&packed_files)?),
             DefaultPlugins
                 .set(WindowPlugin {
                     primary_window: Some(Window {
@@ -668,9 +666,7 @@ fn main() -> Result<()> {
         )
         .add_systems(FixedUpdate, (autofocus, animate_camera, animate_textures))
         .add_plugins(MaterialPlugin::<ScrapMaterial>::default())
-        .init_gizmo_group::<DefaultGizmoConfigGroup>()
-        .init_asset::<asset_loader::TestAsset>();
-    // .init_asset_loader::<asset_loader::TestLoader>();
+        .init_gizmo_group::<DefaultGizmoConfigGroup>();
     embedded_asset!(app, "shaders/test.wgsl");
     app.run();
     Ok(())
@@ -1823,7 +1819,12 @@ pub(crate) struct MatColors {
     pub power: f32,
 }
 
-impl parser::MAT {
+trait MatExt {
+    fn shader(&self) -> &'static str;
+    fn colors(&self) -> MatColors;
+}
+
+impl MatExt for parser::MAT {
     fn shader(&self) -> &'static str {
         todo!("port 0x6a9050");
     }
@@ -3377,18 +3378,7 @@ impl CameraBundle {
     }
 }
 
-fn setup(
-    mut commands: Commands,
-    assets: Res<AssetServer>,
-    mut test_ass: ResMut<Assets<TestAsset>>,
-) {
-    // let meta = asset_loader::TestLoader.default_meta();
-    // let serialized_meta = meta.serialize();
-    // println!("{}",unsafe {std::str::from_utf8_unchecked(&serialized_meta)});
-    // let ass = dbg!(assets.load::<asset_loader::TestAsset>("packed://Levels/Outskirts/Map/Map3d.emi"));
-    // let test = test_ass.get(&ass);
-    // dbg!(test);
-    // std::process::exit(0);
+fn setup(mut commands: Commands) {
     commands.spawn(CameraBundle::new()).with_children(|parent| {
         // parent.spawn(PointLight { ..default() });
     });
