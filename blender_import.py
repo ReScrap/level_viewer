@@ -315,6 +315,8 @@ def build_material(
             links.remove(input_socket.links[0])
         links.new(output_socket, input_socket)
 
+    has_alpha_source = False
+
     if "diffuse" in role_images:
         tex = nodes.new("ShaderNodeTexImage")
         tex.image = role_images["diffuse"]
@@ -322,12 +324,13 @@ def build_material(
         replace_input_link(bsdf.inputs["Base Color"], tex.outputs["Color"])
         if "Alpha" in tex.outputs:
             replace_input_link(bsdf.inputs["Alpha"], tex.outputs["Alpha"])
+            has_alpha_source = True
 
     if "glow" in role_images:
         tex = nodes.new("ShaderNodeTexImage")
         tex.image = role_images["glow"]
         apply_uv_layer(tex, 4)
-        links.new(tex.outputs["Color"], bsdf.inputs["Emission Color"])
+        replace_input_link(bsdf.inputs["Emission Color"], tex.outputs["Color"])
 
     if "bump" in role_images:
         tex = nodes.new("ShaderNodeTexImage")
@@ -359,9 +362,9 @@ def build_material(
             mix.inputs["Fac"].default_value = 0.5 if mix.blend_type == "MIX" else 1.0
             links.new(diffuse_tex.outputs["Color"], mix.inputs[1])
             links.new(tex.outputs["Color"], mix.inputs[2])
-            links.new(mix.outputs["Color"], bsdf.inputs["Base Color"])
+            replace_input_link(bsdf.inputs["Base Color"], mix.outputs["Color"])
         else:
-            links.new(tex.outputs["Color"], bsdf.inputs["Base Color"])
+            replace_input_link(bsdf.inputs["Base Color"], tex.outputs["Color"])
 
     if "lightmap" in role_images:
         lm_uv = nodes.new("ShaderNodeUVMap")
@@ -391,7 +394,7 @@ def build_material(
     alpha_blend = (src_blend, dst_blend) in {
         ("SrcAlpha", "InvSrcAlpha"),
         ("SrcAlpha", "One"),
-    } or diffuse_alpha != 0
+    } or diffuse_alpha != 0 or has_alpha_source
 
     if "NO_ALPHA_BLEND" in attrib:
         alpha_blend = False
@@ -399,10 +402,14 @@ def build_material(
     if additive:
         material.blend_method = "BLEND"
         material.shadow_method = "NONE"
+        material.show_transparent_back = False
         bsdf.inputs["Emission Strength"].default_value = 1.0
+        if not bsdf.inputs["Alpha"].is_linked:
+            bsdf.inputs["Alpha"].default_value = max(0.0, min(1.0, diffuse_alpha / 255.0)) if diffuse_alpha else 0.0
     elif alpha_blend:
         material.blend_method = "BLEND"
         material.shadow_method = "HASHED"
+        material.show_transparent_back = False
         if not bsdf.inputs["Alpha"].is_linked:
             bsdf.inputs["Alpha"].default_value = max(0.0, min(1.0, diffuse_alpha / 255.0))
     else:
@@ -439,17 +446,17 @@ def build_material(
             mul.inputs["Fac"].default_value = 1.0
             links.new(cloud_mix.outputs["Color"], mul.inputs[1])
             links.new(tint.outputs[0], mul.inputs[2])
-            links.new(mul.outputs["Color"], bsdf.inputs["Emission Color"])
-            links.new(mul.outputs["Color"], bsdf.inputs["Base Color"])
+            replace_input_link(bsdf.inputs["Emission Color"], mul.outputs["Color"])
+            replace_input_link(bsdf.inputs["Base Color"], mul.outputs["Color"])
         else:
-            links.new(cloud_mix.outputs["Color"], bsdf.inputs["Emission Color"])
+            replace_input_link(bsdf.inputs["Emission Color"], cloud_mix.outputs["Color"])
 
     if shader_info:
         shader_node = build_expression_nodes(node_tree, shader_info, role_images)
         if shader_node is not None:
             try:
-                links.new(shader_node.outputs[0], bsdf.inputs["Base Color"])
-                links.new(shader_node.outputs[0], bsdf.inputs["Emission Color"])
+                replace_input_link(bsdf.inputs["Base Color"], shader_node.outputs[0])
+                replace_input_link(bsdf.inputs["Emission Color"], shader_node.outputs[0])
             except Exception as exc:
                 print(f"Shader node wiring failed for '{mat_name}': {exc}")
 
