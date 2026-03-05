@@ -1,12 +1,12 @@
 use std::{
     collections::{BTreeMap, HashMap},
-    path::{Path, PathBuf},
+    io::Read,
 };
 
 use color_eyre::eyre::Result;
 use serde::Serialize;
 
-use crate::parser::{BlendMode, MatPropAttrib, MAT};
+use crate::parser::{multi_pack_fs::MultiPackFS, BlendMode, MatPropAttrib, MAT};
 
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct MaterialShaderInfo {
@@ -90,21 +90,21 @@ pub(crate) enum ExpressionNodeKind {
     },
 }
 
-pub(crate) fn analyze_level_material_shaders(
+pub(crate) fn analyze_level_material_shaders_from_fs(
     materials: &[(u32, MAT)],
-    shader_dir: &Path,
+    fs: &MultiPackFS,
 ) -> Result<Vec<MaterialShaderInfo>> {
     let mut out = Vec::with_capacity(materials.len());
     for (key, mat) in materials {
-        out.push(analyze_material_shader(*key, mat, shader_dir)?);
+        out.push(analyze_material_shader_from_fs(*key, mat, fs)?);
     }
     Ok(out)
 }
 
-fn analyze_material_shader(
+fn analyze_material_shader_from_fs(
     material_key: u32,
     mat: &MAT,
-    shader_dir: &Path,
+    fs: &MultiPackFS,
 ) -> Result<MaterialShaderInfo> {
     let material_name = mat
         .name
@@ -119,30 +119,29 @@ fn analyze_material_shader(
         _ => (auto_shader, "material_flags".to_owned()),
     };
 
-    let shader_path = resolve_shader_file(shader_dir, &shader_name);
     let mut warnings = Vec::new();
     let mut inputs = Vec::new();
     let mut assembly = None;
     let mut expression_tree = None;
+    let mut shader_file = None;
 
-    match shader_path.as_ref() {
-        Some(path) => {
-            let src = fs_err::read_to_string(&path)?;
-            let (parsed_inputs, tree) = parse_shader_source(&src);
-            inputs = parsed_inputs;
-            assembly = Some(src);
-            expression_tree = Some(tree);
-        }
-        None => {
-            warnings.push(format!("No .psh file found for shader '{shader_name}'"));
-        }
+    if let Some((path, src)) = load_shader_from_multipack(fs, &shader_name)? {
+        let (parsed_inputs, tree) = parse_shader_source(&src);
+        inputs = parsed_inputs;
+        assembly = Some(src);
+        expression_tree = Some(tree);
+        shader_file = Some(path);
+    } else {
+        warnings.push(format!(
+            "No .psh file found in MultiPackFS for shader '{shader_name}'"
+        ));
     }
 
     Ok(MaterialShaderInfo {
         material_key,
         material_name,
         shader_name,
-        shader_file: shader_path.map(path_to_string),
+        shader_file,
         assigned_via,
         inputs,
         assembly,
@@ -208,44 +207,39 @@ fn parse_shader_override(material_name: &str) -> Option<String> {
     Some(rest[..end].trim().to_owned())
 }
 
-fn path_to_string(path: PathBuf) -> String {
-    path.to_string_lossy().replace('\\', "/")
-}
+fn shader_file_candidates(shader_name: &str) -> Vec<String> {
+    let mut candidates = vec![format!("bmp/{shader_name}.psh")];
 
-fn resolve_shader_file(shader_dir: &Path, shader_name: &str) -> Option<PathBuf> {
-    let mut by_norm = HashMap::<String, PathBuf>::new();
-    let Ok(entries) = fs_err::read_dir(shader_dir) else {
-        return None;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.extension().map(|v| v.eq_ignore_ascii_case("psh")) != Some(true) {
-            continue;
-        }
-        if let Some(stem) = path.file_stem().and_then(|v| v.to_str()) {
-            by_norm.insert(normalize_name(stem), path);
-        }
-    }
-
-    let mut candidates = vec![normalize_name(shader_name)];
     if shader_name.eq_ignore_ascii_case("Clouds") {
-        candidates.push("cloudtest".to_owned());
+        candidates.push("bmp/CloudTest.psh".to_owned());
     }
     if shader_name.eq_ignore_ascii_case("GlowFlick") {
-        candidates.push("glowflicklightmap".to_owned());
+        candidates.push("bmp/GlowFlickLightmap.psh".to_owned());
     }
 
-    candidates
-        .into_iter()
-        .find_map(|name| by_norm.get(&name).cloned())
+    candidates.push(format!("bmp/{}.psh", shader_name.to_ascii_lowercase()));
+
+    let mut dedup = BTreeMap::<String, ()>::new();
+    for candidate in candidates {
+        dedup.entry(candidate).or_insert(());
+    }
+    dedup.into_keys().collect()
 }
 
-fn normalize_name(value: &str) -> String {
-    value
-        .chars()
-        .filter(|c| c.is_ascii_alphanumeric())
-        .flat_map(char::to_lowercase)
-        .collect()
+fn load_shader_from_multipack(
+    fs: &MultiPackFS,
+    shader_name: &str,
+) -> Result<Option<(String, String)>> {
+    for candidate in shader_file_candidates(shader_name) {
+        let Ok(mut fh) = fs.open_file(&candidate) else {
+            continue;
+        };
+        let mut data = Vec::new();
+        fh.read_to_end(&mut data)?;
+        let source = String::from_utf8_lossy(&data).to_string();
+        return Ok(Some((candidate, source)));
+    }
+    Ok(None)
 }
 
 fn parse_shader_source(src: &str) -> (Vec<ShaderInput>, ExpressionTree) {
@@ -416,23 +410,22 @@ fn build_expression_tree(instructions: &[ParsedInstruction]) -> ExpressionTree {
     let mut nodes = Vec::<ExpressionNode>::new();
     let mut register_nodes = HashMap::<String, usize>::new();
 
-    let mut ensure_input =
-        |register: &str,
-         nodes: &mut Vec<ExpressionNode>,
-         register_nodes: &mut HashMap<String, usize>| {
-            if let Some(id) = register_nodes.get(register) {
-                return *id;
-            }
-            let id = nodes.len();
-            nodes.push(ExpressionNode {
-                id,
-                kind: ExpressionNodeKind::Input {
-                    register: register.to_owned(),
-                },
-            });
-            register_nodes.insert(register.to_owned(), id);
-            id
-        };
+    let ensure_input = |register: &str,
+                        nodes: &mut Vec<ExpressionNode>,
+                        register_nodes: &mut HashMap<String, usize>| {
+        if let Some(id) = register_nodes.get(register) {
+            return *id;
+        }
+        let id = nodes.len();
+        nodes.push(ExpressionNode {
+            id,
+            kind: ExpressionNodeKind::Input {
+                register: register.to_owned(),
+            },
+        });
+        register_nodes.insert(register.to_owned(), id);
+        id
+    };
 
     for inst in instructions {
         let mut args = Vec::with_capacity(inst.src.len());
