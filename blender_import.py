@@ -240,29 +240,115 @@ def build_material(
     bsdf.inputs["Base Color"].default_value = rgba8_to_float(mat_data.get("diffuse"))
     bsdf.inputs["Emission Color"].default_value = rgba8_to_float(mat_data.get("glow"))
 
+    render_logic = shader_info.get("render_logic", {}) if shader_info else {}
+    engine_vars = shader_info.get("engine_vars", {}) if shader_info else {}
+    shader_kind = str(render_logic.get("shader_kind", "material"))
+    uses_env_map = bool(render_logic.get("uses_env_map", False))
+    uses_env_bump = bool(render_logic.get("uses_env_bump", False))
+    uses_env_blend = bool(render_logic.get("uses_env_blend", False))
+    env_map_scale = float(render_logic.get("env_map_scale", 1.0))
+    env_map_offset = float(render_logic.get("env_map_offset", 0.0))
+    env_bump_scale = float(render_logic.get("env_bump_scale", 1.0))
+    env_bump_extra_offset = float(render_logic.get("env_bump_extra_offset", 0.0))
+    uv_layers = render_logic.get("uv_layers", []) if isinstance(render_logic.get("uv_layers", []), list) else []
+
+    def apply_uv_layer(tex_node: bpy.types.Node, slot: int) -> None:
+        for layer in uv_layers:
+            if int(layer.get("slot", -1)) != slot:
+                continue
+            tex_coord = nodes.new("ShaderNodeTexCoord")
+            mapping = nodes.new("ShaderNodeMapping")
+            mapping.inputs["Scale"].default_value[0] = float(layer.get("scale", 1.0))
+            mapping.inputs["Scale"].default_value[1] = float(layer.get("scale", 1.0))
+            mapping.inputs["Location"].default_value[0] = float(layer.get("velocity_u", 0.0))
+            mapping.inputs["Location"].default_value[1] = float(layer.get("velocity_v", 0.0))
+            mapping.inputs["Rotation"].default_value[2] = float(layer.get("rotation", 0.0))
+            links.new(tex_coord.outputs["UV"], mapping.inputs["Vector"])
+            links.new(mapping.outputs["Vector"], tex_node.inputs["Vector"])
+            return
+
     if "diffuse" in role_images:
         tex = nodes.new("ShaderNodeTexImage")
         tex.image = role_images["diffuse"]
+        apply_uv_layer(tex, 0)
         links.new(tex.outputs["Color"], bsdf.inputs["Base Color"])
-        if tex.outputs.get("Alpha") is not None:
+        if "Alpha" in tex.outputs:
             links.new(tex.outputs["Alpha"], bsdf.inputs["Alpha"])
 
     if "glow" in role_images:
         tex = nodes.new("ShaderNodeTexImage")
         tex.image = role_images["glow"]
+        apply_uv_layer(tex, 4)
         links.new(tex.outputs["Color"], bsdf.inputs["Emission Color"])
 
     if "bump" in role_images:
         tex = nodes.new("ShaderNodeTexImage")
         tex.image = role_images["bump"]
+        apply_uv_layer(tex, 3)
         normal = nodes.new("ShaderNodeNormalMap")
+        normal.inputs["Strength"].default_value = env_bump_scale if uses_env_bump else 1.0
         links.new(tex.outputs["Color"], normal.inputs["Color"])
         links.new(normal.outputs["Normal"], bsdf.inputs["Normal"])
 
-    if "reflection" in role_images:
+    if "reflection" in role_images and uses_env_map:
+        tex_coord = nodes.new("ShaderNodeTexCoord")
+        mapping = nodes.new("ShaderNodeMapping")
+        mapping.inputs["Scale"].default_value[0] = env_map_scale
+        mapping.inputs["Scale"].default_value[1] = env_map_scale
+        mapping.inputs["Location"].default_value[0] = env_map_offset + env_bump_extra_offset
+        mapping.inputs["Location"].default_value[1] = env_map_offset + env_bump_extra_offset
         tex = nodes.new("ShaderNodeTexImage")
         tex.image = role_images["reflection"]
-        links.new(tex.outputs["Color"], bsdf.inputs["Metallic"])
+        apply_uv_layer(tex, 2)
+        links.new(tex_coord.outputs["Reflection"], mapping.inputs["Vector"])
+        links.new(mapping.outputs["Vector"], tex.inputs["Vector"])
+
+        if "diffuse" in role_images and uses_env_blend:
+            diffuse_tex = nodes.new("ShaderNodeTexImage")
+            diffuse_tex.image = role_images["diffuse"]
+            mix = nodes.new("ShaderNodeMixRGB")
+            mix.blend_type = "MIX" if bool(engine_vars.get("env_blend", True)) else "ADD"
+            mix.inputs["Fac"].default_value = 0.5 if mix.blend_type == "MIX" else 1.0
+            links.new(diffuse_tex.outputs["Color"], mix.inputs[1])
+            links.new(tex.outputs["Color"], mix.inputs[2])
+            links.new(mix.outputs["Color"], bsdf.inputs["Base Color"])
+        else:
+            links.new(tex.outputs["Color"], bsdf.inputs["Base Color"])
+
+    if shader_kind == "clouds" and "diffuse" in role_images and "glow" in role_images:
+        cloud_tint = render_logic.get("cloud_tint")
+        cloud_mix = nodes.new("ShaderNodeMixRGB")
+        cloud_mix.blend_type = "ADD"
+        cloud_mix.inputs["Fac"].default_value = 1.0
+
+        cloud_a = nodes.new("ShaderNodeTexImage")
+        cloud_a.image = role_images["diffuse"]
+        apply_uv_layer(cloud_a, 0)
+
+        cloud_b = nodes.new("ShaderNodeTexImage")
+        cloud_b.image = role_images["glow"]
+        apply_uv_layer(cloud_b, 1)
+
+        links.new(cloud_a.outputs["Color"], cloud_mix.inputs[1])
+        links.new(cloud_b.outputs["Color"], cloud_mix.inputs[2])
+
+        if isinstance(cloud_tint, list) and len(cloud_tint) >= 3:
+            tint = nodes.new("ShaderNodeRGB")
+            tint.outputs[0].default_value = (
+                float(cloud_tint[0]),
+                float(cloud_tint[1]),
+                float(cloud_tint[2]),
+                float(cloud_tint[3]) if len(cloud_tint) > 3 else 1.0,
+            )
+            mul = nodes.new("ShaderNodeMixRGB")
+            mul.blend_type = "MULTIPLY"
+            mul.inputs["Fac"].default_value = 1.0
+            links.new(cloud_mix.outputs["Color"], mul.inputs[1])
+            links.new(tint.outputs[0], mul.inputs[2])
+            links.new(mul.outputs["Color"], bsdf.inputs["Emission Color"])
+            links.new(mul.outputs["Color"], bsdf.inputs["Base Color"])
+        else:
+            links.new(cloud_mix.outputs["Color"], bsdf.inputs["Emission Color"])
 
     if shader_info:
         shader_node = build_expression_nodes(node_tree, shader_info, role_images)

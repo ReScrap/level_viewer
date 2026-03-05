@@ -6,7 +6,95 @@ use std::{
 use color_eyre::eyre::Result;
 use serde::Serialize;
 
-use crate::parser::{multi_pack_fs::MultiPackFS, BlendMode, MatPropAttrib, MAT};
+use crate::parser::{multi_pack_fs::MultiPackFS, BlendMode, IniData, MatPropAttrib, MAT};
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct EngineVarsSnapshot {
+    pub pshaders: bool,
+    pub psmask: u32,
+    pub env_blend: bool,
+    pub env_map_view_dep: i32,
+    pub env_map_scale: f32,
+    pub env_map_offset: f32,
+    pub env_bump_scale: f32,
+    pub env_bump_bias: bool,
+    pub cloud_vel1x: f32,
+    pub cloud_vel1y: f32,
+    pub cloud_vel2x: f32,
+    pub cloud_vel2y: f32,
+    pub cloud_scale1: f32,
+    pub cloud_scale2: f32,
+    pub cloud_emi: f32,
+    pub cloud_r: f32,
+    pub cloud_g: f32,
+    pub cloud_b: f32,
+    pub cloud_a: f32,
+    pub glow_flick_tile: f32,
+    pub glow_flick_rot: f32,
+    pub glow_flick_bump: f32,
+    pub glow_flick_brot: f32,
+    pub glow_flick_mod: f32,
+}
+
+impl Default for EngineVarsSnapshot {
+    fn default() -> Self {
+        Self {
+            pshaders: true,
+            psmask: 0,
+            env_blend: true,
+            env_map_view_dep: 2,
+            env_map_scale: 1.0,
+            env_map_offset: 0.0,
+            env_bump_scale: 1.0,
+            env_bump_bias: false,
+            cloud_vel1x: 0.0,
+            cloud_vel1y: 0.0,
+            cloud_vel2x: 0.0,
+            cloud_vel2y: 0.0,
+            cloud_scale1: 1.0,
+            cloud_scale2: 1.0,
+            cloud_emi: 1.0,
+            cloud_r: 1.0,
+            cloud_g: 1.0,
+            cloud_b: 1.0,
+            cloud_a: 1.0,
+            glow_flick_tile: 1.0,
+            glow_flick_rot: 0.0,
+            glow_flick_bump: 0.4,
+            glow_flick_brot: 0.0,
+            glow_flick_mod: 0.5,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct RenderUvLayer {
+    pub slot: u8,
+    pub velocity_u: f32,
+    pub velocity_v: f32,
+    pub scale: f32,
+    pub rotation: f32,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct ShaderRenderLogic {
+    pub shader_kind: String,
+    pub uses_env_map: bool,
+    pub uses_env_bump: bool,
+    pub uses_env_blend: bool,
+    pub env_stage: Option<u8>,
+    pub env_map_view_dep: i32,
+    pub env_map_scale: f32,
+    pub env_map_offset: f32,
+    pub env_bump_scale: f32,
+    pub env_bump_bias: bool,
+    pub env_bump_extra_offset: f32,
+    pub pshader_enabled: bool,
+    pub psmask_block_bit: Option<u32>,
+    pub uv_layers: Vec<RenderUvLayer>,
+    pub cloud_tint: Option<[f32; 4]>,
+    pub glow_flick: Option<[f32; 3]>,
+}
 
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct MaterialShaderInfo {
@@ -18,6 +106,8 @@ pub(crate) struct MaterialShaderInfo {
     pub inputs: Vec<ShaderInput>,
     pub assembly: Option<String>,
     pub expression_tree: Option<ExpressionTree>,
+    pub engine_vars: EngineVarsSnapshot,
+    pub render_logic: ShaderRenderLogic,
     pub warnings: Vec<String>,
 }
 
@@ -93,10 +183,17 @@ pub(crate) enum ExpressionNodeKind {
 pub(crate) fn analyze_level_material_shaders_from_fs(
     materials: &[(u32, MAT)],
     fs: &MultiPackFS,
+    config: &IniData,
 ) -> Result<Vec<MaterialShaderInfo>> {
+    let engine_vars = engine_vars_from_config(config);
     let mut out = Vec::with_capacity(materials.len());
     for (key, mat) in materials {
-        out.push(analyze_material_shader_from_fs(*key, mat, fs)?);
+        out.push(analyze_material_shader_from_fs(
+            *key,
+            mat,
+            fs,
+            &engine_vars,
+        )?);
     }
     Ok(out)
 }
@@ -105,6 +202,7 @@ fn analyze_material_shader_from_fs(
     material_key: u32,
     mat: &MAT,
     fs: &MultiPackFS,
+    engine_vars: &EngineVarsSnapshot,
 ) -> Result<MaterialShaderInfo> {
     let material_name = mat
         .name
@@ -137,6 +235,8 @@ fn analyze_material_shader_from_fs(
         ));
     }
 
+    let render_logic = infer_render_logic(&shader_name, engine_vars);
+
     Ok(MaterialShaderInfo {
         material_key,
         material_name,
@@ -146,8 +246,341 @@ fn analyze_material_shader_from_fs(
         inputs,
         assembly,
         expression_tree,
+        engine_vars: engine_vars.clone(),
+        render_logic,
         warnings,
     })
+}
+
+fn infer_render_logic(shader_name: &str, vars: &EngineVarsSnapshot) -> ShaderRenderLogic {
+    let lower = shader_name.to_ascii_lowercase();
+    let shader_kind = shader_kind_from_name(&lower).to_owned();
+    let uses_env_map = lower.contains("envmap") || lower.contains("envbump");
+    let uses_env_bump = lower.contains("envbump");
+    let uses_env_blend = lower.contains("maskenv") || lower.contains("envmap");
+    let env_stage = if uses_env_bump {
+        Some(2)
+    } else if uses_env_map {
+        Some(1)
+    } else {
+        None
+    };
+    let psmask_block_bit = shader_psmask_block_bit(shader_name);
+    let mut uv_layers = Vec::new();
+    let mut cloud_tint = None;
+    let mut glow_flick = None;
+
+    match shader_kind.as_str() {
+        "clouds" => {
+            uv_layers.push(RenderUvLayer {
+                slot: 0,
+                velocity_u: vars.cloud_vel1x,
+                velocity_v: vars.cloud_vel1y,
+                scale: vars.cloud_scale1,
+                rotation: 0.0,
+            });
+            uv_layers.push(RenderUvLayer {
+                slot: 1,
+                velocity_u: vars.cloud_vel2x,
+                velocity_v: vars.cloud_vel2y,
+                scale: vars.cloud_scale2,
+                rotation: 0.0,
+            });
+            cloud_tint = Some([
+                vars.cloud_r * vars.cloud_emi,
+                vars.cloud_g * vars.cloud_emi,
+                vars.cloud_b * vars.cloud_emi,
+                vars.cloud_a * vars.cloud_emi,
+            ]);
+        }
+        "glowflick" => {
+            uv_layers.push(RenderUvLayer {
+                slot: 1,
+                velocity_u: 0.01,
+                velocity_v: 0.1,
+                scale: vars.glow_flick_tile,
+                rotation: vars.glow_flick_rot,
+            });
+            glow_flick = Some([
+                vars.glow_flick_bump,
+                vars.glow_flick_brot,
+                vars.glow_flick_mod,
+            ]);
+        }
+        "electric" => {
+            uv_layers.push(RenderUvLayer {
+                slot: 0,
+                velocity_u: -0.1,
+                velocity_v: 0.26,
+                scale: 1.2,
+                rotation: 0.0,
+            });
+            uv_layers.push(RenderUvLayer {
+                slot: 1,
+                velocity_u: 0.08,
+                velocity_v: -0.06,
+                scale: 5.4,
+                rotation: 0.0,
+            });
+        }
+        "fire" => {
+            uv_layers.push(RenderUvLayer {
+                slot: 0,
+                velocity_u: -0.5,
+                velocity_v: 0.8,
+                scale: 4.0,
+                rotation: 0.0,
+            });
+            uv_layers.push(RenderUvLayer {
+                slot: 1,
+                velocity_u: 0.02,
+                velocity_v: -0.03,
+                scale: 6.0,
+                rotation: 0.0,
+            });
+        }
+        _ => {}
+    }
+
+    ShaderRenderLogic {
+        shader_kind,
+        uses_env_map,
+        uses_env_bump,
+        uses_env_blend,
+        env_stage,
+        env_map_view_dep: vars.env_map_view_dep,
+        env_map_scale: vars.env_map_scale,
+        env_map_offset: vars.env_map_offset,
+        env_bump_scale: vars.env_bump_scale,
+        env_bump_bias: vars.env_bump_bias,
+        env_bump_extra_offset: if vars.env_bump_bias {
+            vars.env_bump_scale * 0.5
+        } else {
+            0.0
+        },
+        pshader_enabled: vars.pshaders,
+        psmask_block_bit,
+        uv_layers,
+        cloud_tint,
+        glow_flick,
+    }
+}
+
+fn shader_kind_from_name(lower: &str) -> &'static str {
+    match lower {
+        "clouds" => "clouds",
+        "glowflick" => "glowflick",
+        "electric" => "electric",
+        "fire" => "fire",
+        "glass" => "glass",
+        "waves" => "waves",
+        "scroll" => "scroll",
+        "bloomfilter" | "bloomblur" | "bloomtarget" => "postprocess_bloom",
+        "motionbluradd" | "motionblurtarget" => "postprocess_motion_blur",
+        "blurtarget" => "postprocess_blur",
+        "dudvfilter" | "dudvtarget" => "postprocess_dudv",
+        "radialblurtarget" => "postprocess_radial_blur",
+        _ => "material",
+    }
+}
+
+fn shader_psmask_block_bit(shader_name: &str) -> Option<u32> {
+    let lower = shader_name.to_ascii_lowercase();
+    if lower == "envmap" {
+        return Some(0x400);
+    }
+    if lower == "envmaplightmap" {
+        return Some(0x800);
+    }
+    if lower == "maskenvmap" {
+        return Some(0x10);
+    }
+    if lower == "maskenvmaplightmap" {
+        return Some(0x100);
+    }
+    if lower == "maskenvbump" {
+        return Some(0x8);
+    }
+    if lower == "maskenvbumplightmap" {
+        return Some(0x80);
+    }
+    if lower == "glowmapmaskenvmap" {
+        return Some(0x4000);
+    }
+    if lower == "glowmapmaskenvmaplightmap" {
+        return Some(0x20000);
+    }
+    if lower == "glowmapmaskenvbump" {
+        return Some(0x10000);
+    }
+    if lower == "glowmapmaskenvbumplightmap" {
+        return Some(0x100000);
+    }
+    if lower == "clouds" {
+        return Some(0x200);
+    }
+    if lower == "glowmap" {
+        return Some(0x1000);
+    }
+    if lower == "glowflick" {
+        return Some(0x8000);
+    }
+    if lower == "electric" {
+        return Some(0x10000);
+    }
+    if lower == "fire" {
+        return Some(0x20000);
+    }
+    if lower == "glass" {
+        return Some(0x40000);
+    }
+    if lower == "waves" {
+        return Some(0x80000);
+    }
+    if lower == "bloomfilter" {
+        return Some(0x100000);
+    }
+    if lower == "bloomblur" {
+        return Some(0x200000);
+    }
+    if lower == "bloomtarget" {
+        return Some(0x400000);
+    }
+    if lower == "motionbluradd" {
+        return Some(0x800000);
+    }
+    if lower == "motionblurtarget" {
+        return Some(0x1000000);
+    }
+    if lower == "blurtarget" {
+        return Some(0x2000000);
+    }
+    if lower == "dudvfilter" {
+        return Some(0x4000000);
+    }
+    if lower == "dudvtarget" {
+        return Some(0x8000000);
+    }
+    if lower == "radialblurtarget" {
+        return Some(0x10000000);
+    }
+    if lower == "diffusenolit" {
+        return Some(0x20000000);
+    }
+    None
+}
+
+fn engine_vars_from_config(config: &IniData) -> EngineVarsSnapshot {
+    let mut flat = HashMap::<String, String>::new();
+    for section in config.values() {
+        for (key, value) in section {
+            if let Some(value) = value {
+                flat.insert(key.to_ascii_lowercase(), value.trim().to_owned());
+            }
+        }
+    }
+
+    let get = |name: &str| flat.get(&name.to_ascii_lowercase()).map(|s| s.as_str());
+    let mut vars = EngineVarsSnapshot::default();
+
+    if let Some(v) = get("r_pshaders") {
+        vars.pshaders = parse_bool(v, vars.pshaders);
+    }
+    if let Some(v) = get("r_psmask") {
+        vars.psmask = parse_u32(v, vars.psmask);
+    }
+    if let Some(v) = get("r_envblend") {
+        vars.env_blend = parse_bool(v, vars.env_blend);
+    }
+    if let Some(v) = get("r_envmapviewdep") {
+        vars.env_map_view_dep = parse_i32(v, vars.env_map_view_dep);
+    }
+    if let Some(v) = get("r_envmapscale") {
+        vars.env_map_scale = parse_f32(v, vars.env_map_scale);
+    }
+    if let Some(v) = get("r_envmapoffset") {
+        vars.env_map_offset = parse_f32(v, vars.env_map_offset);
+    }
+    if let Some(v) = get("r_envbumpscale") {
+        vars.env_bump_scale = parse_f32(v, vars.env_bump_scale);
+    }
+    if let Some(v) = get("r_envbumpbias") {
+        vars.env_bump_bias = parse_bool(v, vars.env_bump_bias);
+    }
+    if let Some(v) = get("r_cloudvel1x") {
+        vars.cloud_vel1x = parse_f32(v, vars.cloud_vel1x);
+    }
+    if let Some(v) = get("r_cloudvel1y") {
+        vars.cloud_vel1y = parse_f32(v, vars.cloud_vel1y);
+    }
+    if let Some(v) = get("r_cloudvel2x") {
+        vars.cloud_vel2x = parse_f32(v, vars.cloud_vel2x);
+    }
+    if let Some(v) = get("r_cloudvel2y") {
+        vars.cloud_vel2y = parse_f32(v, vars.cloud_vel2y);
+    }
+    if let Some(v) = get("r_cloudscale1") {
+        vars.cloud_scale1 = parse_f32(v, vars.cloud_scale1);
+    }
+    if let Some(v) = get("r_cloudscale2") {
+        vars.cloud_scale2 = parse_f32(v, vars.cloud_scale2);
+    }
+    if let Some(v) = get("r_cloudemi") {
+        vars.cloud_emi = parse_f32(v, vars.cloud_emi);
+    }
+    if let Some(v) = get("r_cloudr") {
+        vars.cloud_r = parse_f32(v, vars.cloud_r);
+    }
+    if let Some(v) = get("r_cloudg") {
+        vars.cloud_g = parse_f32(v, vars.cloud_g);
+    }
+    if let Some(v) = get("r_cloudb") {
+        vars.cloud_b = parse_f32(v, vars.cloud_b);
+    }
+    if let Some(v) = get("r_clouda") {
+        vars.cloud_a = parse_f32(v, vars.cloud_a);
+    }
+    if let Some(v) = get("r_glowflicktile") {
+        vars.glow_flick_tile = parse_f32(v, vars.glow_flick_tile);
+    }
+    if let Some(v) = get("r_glowflickrot") {
+        vars.glow_flick_rot = parse_f32(v, vars.glow_flick_rot);
+    }
+    if let Some(v) = get("r_glowflickbump") {
+        vars.glow_flick_bump = parse_f32(v, vars.glow_flick_bump);
+    }
+    if let Some(v) = get("r_glowflickbrot") {
+        vars.glow_flick_brot = parse_f32(v, vars.glow_flick_brot);
+    }
+    if let Some(v) = get("r_glowflickmod") {
+        vars.glow_flick_mod = parse_f32(v, vars.glow_flick_mod);
+    }
+
+    vars
+}
+
+fn parse_bool(raw: &str, default: bool) -> bool {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" => true,
+        "0" | "false" | "no" | "off" => false,
+        _ => default,
+    }
+}
+
+fn parse_u32(raw: &str, default: u32) -> u32 {
+    let s = raw.trim();
+    if let Some(hex) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
+        return u32::from_str_radix(hex, 16).unwrap_or(default);
+    }
+    s.parse::<u32>().unwrap_or(default)
+}
+
+fn parse_i32(raw: &str, default: i32) -> i32 {
+    raw.trim().parse::<i32>().unwrap_or(default)
+}
+
+fn parse_f32(raw: &str, default: f32) -> f32 {
+    raw.trim().parse::<f32>().unwrap_or(default)
 }
 
 fn auto_assign_shader(mat: &MAT) -> String {
