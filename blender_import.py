@@ -315,6 +315,19 @@ def build_material(
             links.remove(input_socket.links[0])
         links.new(output_socket, input_socket)
 
+    def set_if_hasattr(obj: Any, attr: str, value: Any) -> None:
+        if hasattr(obj, attr):
+            setattr(obj, attr, value)
+
+    def set_blend_mode(mode: str) -> None:
+        set_if_hasattr(material, "blend_method", mode)
+        if hasattr(material, "surface_render_method"):
+            modern_map = {
+                "OPAQUE": "DITHERED",
+                "BLEND": "BLENDED",
+            }
+            set_if_hasattr(material, "surface_render_method", modern_map.get(mode, "BLENDED"))
+
     has_alpha_source = False
 
     if "diffuse" in role_images:
@@ -400,21 +413,21 @@ def build_material(
         alpha_blend = False
 
     if additive:
-        material.blend_method = "BLEND"
-        material.shadow_method = "NONE"
-        material.show_transparent_back = False
+        set_blend_mode("BLEND")
+        set_if_hasattr(material, "shadow_method", "NONE")
+        set_if_hasattr(material, "show_transparent_back", False)
         bsdf.inputs["Emission Strength"].default_value = 1.0
         if not bsdf.inputs["Alpha"].is_linked:
             bsdf.inputs["Alpha"].default_value = max(0.0, min(1.0, diffuse_alpha / 255.0)) if diffuse_alpha else 0.0
     elif alpha_blend:
-        material.blend_method = "BLEND"
-        material.shadow_method = "HASHED"
-        material.show_transparent_back = False
+        set_blend_mode("BLEND")
+        set_if_hasattr(material, "shadow_method", "HASHED")
+        set_if_hasattr(material, "show_transparent_back", False)
         if not bsdf.inputs["Alpha"].is_linked:
             bsdf.inputs["Alpha"].default_value = max(0.0, min(1.0, diffuse_alpha / 255.0))
     else:
-        material.blend_method = "OPAQUE"
-        material.shadow_method = "OPAQUE"
+        set_blend_mode("OPAQUE")
+        set_if_hasattr(material, "shadow_method", "OPAQUE")
 
     if shader_kind == "clouds" and "diffuse" in role_images and "glow" in role_images:
         cloud_tint = render_logic.get("cloud_tint")
