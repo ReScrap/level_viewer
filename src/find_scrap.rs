@@ -16,12 +16,11 @@ pub(crate) fn get_steam_path() -> Result<PathBuf> {
     Ok(lib.resolve_app_dir(&app))
 }
 
-
 pub(crate) fn get_path() -> PathBuf {
     let err = match get_steam_path() {
         Ok(path) => {
             return path;
-        },
+        }
         Err(err) => err,
     };
     error!("{err}");
@@ -32,7 +31,7 @@ pub(crate) fn get_path() -> PathBuf {
         .set_buttons(rfd::MessageButtons::Ok)
         .set_level(rfd::MessageLevel::Warning)
         .show();
-    
+
     let Some(folder) = rfd::FileDialog::new()
         .set_title("Scrapland installation folder")
         .pick_folder()
