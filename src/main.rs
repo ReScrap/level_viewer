@@ -61,10 +61,10 @@ use pid::Pid;
 use regex::Regex;
 use rhexdump::{rhexdump, rhexdumps};
 use scrap_parser::{
-    parser::{
+    packed_vfs::PackedTransformAction, parser::{
         self, AniTrackType, AnimTracks, CM3, Data, Level, LightType, NodeData, ParsedData, SM3,
         Vertex, multi_pack_fs::MultiPackFS,
-    },
+    }
 };
 use serde::{Deserialize, Serialize};
 
@@ -348,7 +348,7 @@ fn main() -> Result<()> {
 
     let mut cli = Cli::parse();
 
-    if cli.scrapland == PathBuf::from("<auto-detected>") {
+    if *cli.scrapland == *"<auto-detected>" {
         cli.scrapland = find_scrap::get_path();
     }
     let packed_files = get_packed_files(&cli.scrapland)?;
@@ -368,9 +368,19 @@ fn main() -> Result<()> {
         }
         return Ok(());
     }
+    let packed_files = get_packed_files(&cli.scrapland.join("backup"))?;
+    let out_path = PathBuf::from("packed_out");
+    for file in packed_files {
+        scrap_parser::packed_vfs::transform_packed(
+            file.as_path(),
+            out_path.join(file.file_name().unwrap()),
+            |entry, source, target| {
+                // TODO:
+                Ok(PackedTransformAction::Rewrite { path: None })
+            }
+        )?;
+    }
     return Ok(());
-
-    let packed_files = get_packed_files(&cli.scrapland)?;
     let fs = MultiPackFS::new(&packed_files)?;
     // for sm3_entry in &entries {
     //     if !sm3_entry.path.ends_with(".sm3") {
