@@ -14,7 +14,7 @@ use futures_lite::{AsyncRead, AsyncSeek};
 use memmap2::Mmap;
 use serde::Serialize;
 use vfs::{error::VfsErrorKind, FileSystem, SeekAndWrite, VfsMetadata};
-
+use glob::Pattern;
 use crate::parser::{PackedEntry, PackedHeader};
 
 #[derive(Debug)]
@@ -22,6 +22,26 @@ pub struct PackedFile {
     _fh: fs::File,
     mm: Arc<Mmap>,
     _path: PathBuf,
+    pub header: PackedHeader
+}
+
+impl PackedFile {
+    fn load<P: AsRef<Path>>(path: P) -> Result<Self> {
+        let mut fh = BufReader::new(fs::File::open(path.as_ref())?);
+        let header = fh.read_le::<PackedHeader>()?;
+        println!(
+            "Found {} files in {}",
+            header.files.len(),
+            path.as_ref().display()
+        );
+        let fh = fh.into_inner();
+        Ok(Self {
+            mm: Arc::new(unsafe { Mmap::map(&fh)? }),
+            _path: path.as_ref().to_owned(),
+            _fh: fh,
+            header
+        })
+    }
 }
 
 #[derive(Debug)]
@@ -55,23 +75,9 @@ impl MultiPack {
         let mut tree = DirectoryTree::default();
         let mut packed_files = vec![];
         for (file_index, file) in files.iter().enumerate() {
-            let mut fh = BufReader::new(fs::File::open(file.as_ref())?);
-            let header = fh.read_le::<PackedHeader>()?;
-            println!(
-                "Found {} files in {}",
-                header.files.len(),
-                file.as_ref().display()
-            );
-            // for file in &header.files {
-            //     println!("{}", file.path.string);
-            // }
-            tree.merge(&header.files, file_index);
-            let fh = fh.into_inner();
-            packed_files.push(PackedFile {
-                mm: Arc::new(unsafe { Mmap::map(&fh)? }),
-                _path: file.as_ref().to_owned(),
-                _fh: fh,
-            });
+            let packed = PackedFile::load(file)?;
+            tree.merge(&packed.header.files, file_index);
+            packed_files.push(packed);
         }
         Ok(Self {
             tree,
@@ -300,5 +306,62 @@ impl FileSystem for MultiPack {
 
     fn remove_dir(&self, _: &str) -> vfs::VfsResult<()> {
         Err(VfsErrorKind::NotSupported.into())
+    }
+}
+
+
+enum PackedOp {
+    Delete(Pattern),
+    Rename(Pattern,fn(&str) -> String),
+    Patch(Pattern,fn(&str,&[u8]) -> Vec<u8>),
+    Add(String,fn() -> Vec<u8>)
+}
+
+struct PackedTransformer {
+    packed: PackedFile,
+    ops: Vec<PackedOp>
+}
+
+impl PackedTransformer {
+    fn new(path: &str) -> Result<Self> {
+        Ok(Self {
+            packed: PackedFile::load(path)?,
+            ops: vec![
+                PackedOp::Add("Test.dat".to_owned(), || {
+                    vec![0xff;1024]
+                })
+            ],
+        })
+    }
+
+    fn delete(mut self, pattern: &str) -> Result<Self> {
+        self.ops.push(
+            PackedOp::Delete(glob::Pattern::new(pattern)?)
+        );
+        Ok(self)
+    }
+
+    fn rename(mut self, pattern: &str, func: fn(&str) -> String) -> Result<Self> {
+        self.ops.push(
+            PackedOp::Rename(glob::Pattern::new(pattern)?, func)
+        );
+        Ok(self)
+    }
+
+    fn patch(mut self, pattern: &str, func: fn(&str, &[u8]) -> Vec<u8>) -> Result<Self> {
+        self.ops.push(
+            PackedOp::Patch(glob::Pattern::new(pattern)?, func)
+        );
+        Ok(self)
+    }
+    fn add(mut self, path: &str, func: fn() -> Vec<u8>) -> Result<Self> {
+        self.ops.push(
+            PackedOp::Add(path.to_owned(), func)
+        );
+        Ok(self)
+    }
+
+    fn write(mut self, path: &str) -> Result<()> {
+        Ok(())
     }
 }
