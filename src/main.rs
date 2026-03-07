@@ -371,14 +371,19 @@ fn main() -> Result<()> {
     let packed_files = get_packed_files(&cli.scrapland.join("backup"))?;
     let out_path = PathBuf::from("packed_out");
     for file in packed_files {
-        scrap_parser::packed_vfs::transform_packed(
-            file.as_path(),
-            out_path.join(file.file_name().unwrap()),
-            |entry, source, target| {
-                // TODO:
-                Ok(PackedTransformAction::Rewrite { path: None })
+        PackedTransformer::new("Data.packed")
+        .delete("**/*.pyc")
+        .rename("scripts/init.py","script/main.py")
+        .add("data/lol.bin",|| {
+            return vec![0xff,1024];
+        })
+        .modify("**/*.sm3", |name: &str, data: &[u8]| -> Vec<u8> {
+            if name.ends_with(".sm3") {
+                return rebuild_model(data);
             }
-        )?;
+            return data.to_owned();
+        })
+        .write("Mod.packed")?;
     }
     return Ok(());
     let fs = MultiPackFS::new(&packed_files)?;
