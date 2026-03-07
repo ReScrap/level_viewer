@@ -61,7 +61,7 @@ use pid::Pid;
 use regex::Regex;
 use rhexdump::{rhexdump, rhexdumps};
 use scrap_parser::{
-    packed_vfs::PackedTransformAction, parser::{
+    packed_vfs::{PackedTransformer}, parser::{
         self, AniTrackType, AnimTracks, CM3, Data, Level, LightType, NodeData, ParsedData, SM3,
         Vertex, multi_pack_fs::MultiPackFS,
     }
@@ -371,19 +371,18 @@ fn main() -> Result<()> {
     let packed_files = get_packed_files(&cli.scrapland.join("backup"))?;
     let out_path = PathBuf::from("packed_out");
     for file in packed_files {
-        PackedTransformer::new("Data.packed")
-        .delete("**/*.pyc")
-        .rename("scripts/init.py","script/main.py")
-        .add("data/lol.bin",|| {
-            return vec![0xff,1024];
-        })
-        .modify("**/*.sm3", |name: &str, data: &[u8]| -> Vec<u8> {
-            if name.ends_with(".sm3") {
-                return rebuild_model(data);
+        let out = out_path.join(&file.file_name().unwrap());
+        PackedTransformer::new(&file)?.patch("*", |name, buffer| {
+            println!("{}: {}", name, buffer.len());
+            if [".cm3", ".sm3", ".emi", ".dum", ".amc"]
+                .iter()
+                .any(|e| name.ends_with(e))
+            {
+                let data: Data = Cursor::new(buffer).read_le().unwrap();
+                buffer.clear();
+                buffer.write_le(&mut out).unwrap();
             }
-            return data.to_owned();
-        })
-        .write("Mod.packed")?;
+            })?.write(&out)?;
     }
     return Ok(());
     let fs = MultiPackFS::new(&packed_files)?;

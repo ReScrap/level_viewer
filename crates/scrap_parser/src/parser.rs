@@ -47,6 +47,15 @@ pub struct PackedHeader {
     pub files: Vec<PackedEntry>,
 }
 
+impl PackedHeader {
+    pub fn size(&self) -> usize {
+        use binrw::BinWrite;
+        let mut cursor = Cursor::new(Vec::new());
+        self.write_le(&mut cursor).unwrap();
+        cursor.into_inner().len()
+    }
+}
+
 #[binrw]
 #[derive(Serialize, Debug, Deserialize)]
 pub struct Table<
