@@ -1,28 +1,28 @@
 use std::{
     collections::{HashMap, VecDeque},
     fs::File,
-    io::{Cursor, Read, Seek, SeekFrom},
+    io::{Cursor, Read, Seek, SeekFrom, Write},
     ops::Range,
     path::{Path, PathBuf},
     sync::Arc,
 };
 
+use crate::parser::{PackedEntry, PackedHeader, PascalString};
 use binrw::{io::BufReader, BinReaderExt};
 use color_eyre::eyre::{anyhow, bail, Context, Result};
 use fs_err as fs;
 use futures_lite::{AsyncRead, AsyncSeek};
+use glob::Pattern;
 use memmap2::Mmap;
 use serde::Serialize;
 use vfs::{error::VfsErrorKind, FileSystem, SeekAndWrite, VfsMetadata};
-use glob::Pattern;
-use crate::parser::{PackedEntry, PackedHeader};
 
 #[derive(Debug)]
 pub struct PackedFile {
     _fh: fs::File,
     mm: Arc<Mmap>,
     _path: PathBuf,
-    pub header: PackedHeader
+    pub header: PackedHeader,
 }
 
 impl PackedFile {
@@ -39,7 +39,7 @@ impl PackedFile {
             mm: Arc::new(unsafe { Mmap::map(&fh)? }),
             _path: path.as_ref().to_owned(),
             _fh: fh,
-            header
+            header,
         })
     }
 }
@@ -309,59 +309,159 @@ impl FileSystem for MultiPack {
     }
 }
 
-
 enum PackedOp {
     Delete(Pattern),
-    Rename(Pattern,fn(&str) -> String),
-    Patch(Pattern,fn(&str,&[u8]) -> Vec<u8>),
-    Add(String,fn() -> Vec<u8>)
+    Rename(Pattern, fn(&str) -> String),
+    Patch(Pattern, fn(&str, &[u8]) -> Vec<u8>),
+    Add(String, fn() -> Vec<u8>),
 }
 
-struct PackedTransformer {
+pub struct PackedTransformer {
     packed: PackedFile,
-    ops: Vec<PackedOp>
+    ops: Vec<PackedOp>,
 }
 
 impl PackedTransformer {
-    fn new(path: &str) -> Result<Self> {
+    pub fn new<P: AsRef<Path>>(path: P) -> Result<Self> {
         Ok(Self {
             packed: PackedFile::load(path)?,
-            ops: vec![
-                PackedOp::Add("Test.dat".to_owned(), || {
-                    vec![0xff;1024]
-                })
-            ],
+            ops: vec![],
         })
     }
 
-    fn delete(mut self, pattern: &str) -> Result<Self> {
-        self.ops.push(
-            PackedOp::Delete(glob::Pattern::new(pattern)?)
-        );
+    pub fn delete(mut self, pattern: &str) -> Result<Self> {
+        self.ops
+            .push(PackedOp::Delete(glob::Pattern::new(pattern)?));
         Ok(self)
     }
 
-    fn rename(mut self, pattern: &str, func: fn(&str) -> String) -> Result<Self> {
-        self.ops.push(
-            PackedOp::Rename(glob::Pattern::new(pattern)?, func)
-        );
+    pub fn rename(mut self, pattern: &str, func: fn(&str) -> String) -> Result<Self> {
+        self.ops
+            .push(PackedOp::Rename(glob::Pattern::new(pattern)?, func));
         Ok(self)
     }
 
-    fn patch(mut self, pattern: &str, func: fn(&str, &[u8]) -> Vec<u8>) -> Result<Self> {
-        self.ops.push(
-            PackedOp::Patch(glob::Pattern::new(pattern)?, func)
-        );
+    pub fn patch(mut self, pattern: &str, func: fn(&str, &[u8]) -> Vec<u8>) -> Result<Self> {
+        self.ops
+            .push(PackedOp::Patch(glob::Pattern::new(pattern)?, func));
         Ok(self)
     }
-    fn add(mut self, path: &str, func: fn() -> Vec<u8>) -> Result<Self> {
-        self.ops.push(
-            PackedOp::Add(path.to_owned(), func)
-        );
+    pub fn add(mut self, path: &str, func: fn() -> Vec<u8>) -> Result<Self> {
+        self.ops.push(PackedOp::Add(path.to_owned(), func));
         Ok(self)
     }
 
-    fn write(mut self, path: &str) -> Result<()> {
+    pub fn write<P: AsRef<Path>>(self, output_path: P) -> Result<()> {
+        use binrw::BinWrite;
+
+        let mut output_file = File::create(output_path)?;
+
+        let (entries, new_files) = self.process_ops()?;
+
+        let dummy_header = PackedHeader {
+            files: entries
+                .iter()
+                .map(|e| PackedEntry {
+                    path: e.path.clone(),
+                    size: e.size,
+                    offset: 0,
+                })
+                .collect(),
+        };
+        let header_size = dummy_header.size();
+
+        let mut data_offset = header_size;
+
+        let mut entries_with_offsets = Vec::with_capacity(entries.len());
+        for entry in &entries {
+            let offset = data_offset;
+            data_offset += entry.size as usize;
+            entries_with_offsets.push((entry, offset as u32));
+        }
+
+        output_file.seek(SeekFrom::Start(header_size as u64))?;
+
+        for (entry, _offset) in &entries_with_offsets {
+            if let Some(data) = new_files.get(&entry.path.string) {
+                output_file.write_all(data)?;
+            } else {
+                let data = self.get_file_data(&entry.path.string)?;
+                output_file.write_all(&data)?;
+            }
+        }
+
+        output_file.seek(SeekFrom::Start(0))?;
+
+        let header = PackedHeader {
+            files: entries_with_offsets
+                .into_iter()
+                .map(|(e, offset)| {
+                    let mut e = e.clone();
+                    e.offset = offset;
+                    e
+                })
+                .collect(),
+        };
+        header.write_le(&mut output_file)?;
+
         Ok(())
+    }
+
+    fn process_ops(&self) -> Result<(Vec<PackedEntry>, HashMap<String, Vec<u8>>)> {
+        let mut result: Vec<PackedEntry> = self.packed.header.files.clone();
+        let mut new_files: HashMap<String, Vec<u8>> = HashMap::new();
+
+        for op in &self.ops {
+            match op {
+                PackedOp::Delete(pattern) => {
+                    result.retain(|e| !pattern.matches(&e.path.string));
+                }
+                PackedOp::Rename(pattern, func) => {
+                    for e in &mut result {
+                        if pattern.matches(&e.path.string) {
+                            e.path.string = func(&e.path.string);
+                        }
+                    }
+                }
+                PackedOp::Patch(pattern, func) => {
+                    for e in &mut result {
+                        if pattern.matches(&e.path.string) {
+                            let data = self.get_file_data(&e.path.string)?;
+                            let patched = func(&e.path.string, &data);
+                            e.size = patched.len() as u32;
+                        }
+                    }
+                }
+                PackedOp::Add(path, generator) => {
+                    let data = generator();
+                    let size = data.len() as u32;
+                    new_files.insert(path.clone(), data);
+                    result.push(PackedEntry {
+                        path: PascalString {
+                            string: path.clone(),
+                        },
+                        size,
+                        offset: 0,
+                    });
+                }
+            }
+        }
+
+        Ok((result, new_files))
+    }
+
+    fn get_file_data(&self, path: &str) -> Result<Vec<u8>> {
+        let file = self
+            .packed
+            .header
+            .files
+            .iter()
+            .find(|e| e.path.string == path)
+            .ok_or_else(|| anyhow!("File not found: {}", path))?;
+
+        let mm = &self.packed.mm;
+        let data_start = file.offset as usize;
+        let data_end = data_start + file.size as usize;
+        Ok(mm[data_start..data_end].to_vec())
     }
 }
