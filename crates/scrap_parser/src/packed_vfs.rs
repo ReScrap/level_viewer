@@ -1,5 +1,6 @@
 use std::{
-    collections::{HashMap, VecDeque},
+    borrow::Cow,
+    collections::{HashMap, HashSet, VecDeque},
     fs::File,
     io::{Cursor, Read, Seek, SeekFrom, Write},
     ops::Range,
@@ -7,15 +8,16 @@ use std::{
     sync::Arc,
 };
 
-use crate::parser::{PackedEntry, PackedHeader, PascalString};
-use binrw::{io::BufReader, BinReaderExt};
-use color_eyre::eyre::{anyhow, bail, Context, Result};
+use binrw::{BinReaderExt, io::BufReader};
+use color_eyre::eyre::{Context, Result, anyhow, bail};
 use fs_err as fs;
 use futures_lite::{AsyncRead, AsyncSeek};
 use glob::Pattern;
 use memmap2::Mmap;
 use serde::Serialize;
-use vfs::{error::VfsErrorKind, FileSystem, SeekAndWrite, VfsMetadata};
+use vfs::{FileSystem, SeekAndWrite, VfsMetadata, error::VfsErrorKind};
+
+use crate::parser::{PackedEntry, PackedHeader, PascalString};
 
 #[derive(Debug)]
 pub struct PackedFile {
@@ -352,25 +354,120 @@ impl PackedTransformer {
     }
 
     pub fn write<P: AsRef<Path>>(self, output_path: P) -> Result<()> {
-        todo!()
+        use binrw::BinWrite;
+
+        let mut output_file = File::create(output_path.as_ref())
+            .with_context(|| format!("Failed to create {}", output_path.as_ref().display()))?;
+        let processed_entries = self.process_ops()?;
+
+        let header_size = PackedHeader {
+            files: processed_entries
+                .iter()
+                .map(|(path, _)| PackedEntry {
+                    path: PascalString {
+                        string: path.clone(),
+                    },
+                    size: 0,
+                    offset: 0,
+                })
+                .collect(),
+        }
+        .size();
+
+        output_file.seek(SeekFrom::Start(header_size as u64))?;
+
+        let mut data_offset = header_size;
+        let mut final_entries = Vec::with_capacity(processed_entries.len());
+
+        for (path, data) in processed_entries {
+            let offset: u32 = data_offset
+                .try_into()
+                .map_err(|_| anyhow!("Packed offset overflow for {}", path))?;
+
+            output_file.write_all(data.as_ref())?;
+            let len = data.len();
+
+            data_offset = data_offset
+                .checked_add(len)
+                .ok_or_else(|| anyhow!("Packed file is too large"))?;
+
+            let size: u32 = len
+                .try_into()
+                .map_err(|_| anyhow!("Packed entry too large for {}", path))?;
+            final_entries.push(PackedEntry {
+                path: PascalString { string: path },
+                size,
+                offset,
+            });
+        }
+
+        output_file.seek(SeekFrom::Start(0))?;
+        PackedHeader {
+            files: final_entries,
+        }
+        .write_le(&mut output_file)?;
+
+        Ok(())
     }
 
-    fn process_ops(&self) -> Result<(Vec<PackedEntry>, HashMap<String, Vec<u8>>)> {
-        todo!()
-    }
-
-    fn get_file_data<'s>(&'s self, path: &str) -> Result<&'s [u8]> {
-        let file = self
+    fn process_ops<'a>(&'a self) -> Result<Vec<(String, Cow<'a, [u8]>)>> {
+        let mut result: Vec<(String, Cow<'a, [u8]>)> = self
             .packed
             .header
             .files
             .iter()
-            .find(|e| e.path.string == path)
-            .ok_or_else(|| anyhow!("File not found: {}", path))?;
+            .map(|entry| {
+                Ok((
+                    entry.path.string.clone(),
+                    Cow::Borrowed(self.get_entry_data(entry)?),
+                ))
+            })
+            .collect::<Result<Vec<_>>>()?;
 
-        let mm = &self.packed.mm;
-        let data_start = file.offset as usize;
-        let data_end = data_start + file.size as usize;
-        Ok(&mm[data_start..data_end])
+        for op in &self.ops {
+            match op {
+                PackedOp::Delete(pattern) => {
+                    result.retain(|(path, _)| !pattern.matches(path));
+                }
+                PackedOp::Rename(pattern, func) => {
+                    for (path, _) in &mut result {
+                        if pattern.matches(path) {
+                            *path = func(path);
+                        }
+                    }
+                }
+                PackedOp::Patch(pattern, func) => {
+                    for (path, data) in &mut result {
+                        if pattern.matches(path) {
+                            *data = Cow::Owned(func(path, data.as_ref()));
+                        }
+                    }
+                }
+                PackedOp::Add(path, generator) => {
+                    result.push((path.clone(), Cow::Owned(generator())));
+                }
+            }
+        }
+
+        let mut seen = HashSet::with_capacity(result.len());
+        for (path, _) in &result {
+            let key = path.to_ascii_lowercase();
+            if !seen.insert(key) {
+                bail!("Duplicate path after transform: {}", path);
+            }
+        }
+
+        Ok(result)
+    }
+
+    fn get_entry_data<'s>(&'s self, entry: &PackedEntry) -> Result<&'s [u8]> {
+        let data_start = entry.offset as usize;
+        let data_end = data_start
+            .checked_add(entry.size as usize)
+            .ok_or_else(|| anyhow!("Invalid entry range for {}", entry.path.string))?;
+        if data_end > self.packed.mm.len() {
+            bail!("Entry out of bounds: {}", entry.path.string);
+        }
+        Ok(&self.packed.mm[data_start..data_end])
     }
 }
