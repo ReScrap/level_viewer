@@ -352,105 +352,14 @@ impl PackedTransformer {
     }
 
     pub fn write<P: AsRef<Path>>(self, output_path: P) -> Result<()> {
-        use binrw::BinWrite;
-
-        let mut output_file = File::create(output_path)?;
-
-        let (entries, new_files) = self.process_ops()?;
-
-        let dummy_header = PackedHeader {
-            files: entries
-                .iter()
-                .map(|e| PackedEntry {
-                    path: e.path.clone(),
-                    size: e.size,
-                    offset: 0,
-                })
-                .collect(),
-        };
-        let header_size = dummy_header.size();
-
-        let mut data_offset = header_size;
-
-        let mut entries_with_offsets = Vec::with_capacity(entries.len());
-        for entry in &entries {
-            let offset = data_offset;
-            data_offset += entry.size as usize;
-            entries_with_offsets.push((entry, offset as u32));
-        }
-
-        output_file.seek(SeekFrom::Start(header_size as u64))?;
-
-        for (entry, _offset) in &entries_with_offsets {
-            if let Some(data) = new_files.get(&entry.path.string) {
-                output_file.write_all(data)?;
-            } else {
-                let data = self.get_file_data(&entry.path.string)?;
-                output_file.write_all(&data)?;
-            }
-        }
-
-        output_file.seek(SeekFrom::Start(0))?;
-
-        let header = PackedHeader {
-            files: entries_with_offsets
-                .into_iter()
-                .map(|(e, offset)| {
-                    let mut e = e.clone();
-                    e.offset = offset;
-                    e
-                })
-                .collect(),
-        };
-        header.write_le(&mut output_file)?;
-
-        Ok(())
+        todo!()
     }
 
     fn process_ops(&self) -> Result<(Vec<PackedEntry>, HashMap<String, Vec<u8>>)> {
-        let mut result: Vec<PackedEntry> = self.packed.header.files.clone();
-        let mut new_files: HashMap<String, Vec<u8>> = HashMap::new();
-
-        for op in &self.ops {
-            match op {
-                PackedOp::Delete(pattern) => {
-                    result.retain(|e| !pattern.matches(&e.path.string));
-                }
-                PackedOp::Rename(pattern, func) => {
-                    for e in &mut result {
-                        if pattern.matches(&e.path.string) {
-                            e.path.string = func(&e.path.string);
-                        }
-                    }
-                }
-                PackedOp::Patch(pattern, func) => {
-                    for e in &mut result {
-                        if pattern.matches(&e.path.string) {
-                            let data = self.get_file_data(&e.path.string)?;
-                            let patched = func(&e.path.string, &data);
-                            e.size = patched.len() as u32;
-                        }
-                    }
-                }
-                PackedOp::Add(path, generator) => {
-                    let data = generator();
-                    let size = data.len() as u32;
-                    new_files.insert(path.clone(), data);
-                    result.push(PackedEntry {
-                        path: PascalString {
-                            string: path.clone(),
-                        },
-                        size,
-                        offset: 0,
-                    });
-                }
-            }
-        }
-
-        Ok((result, new_files))
+        todo!()
     }
 
-    fn get_file_data(&self, path: &str) -> Result<Vec<u8>> {
+    fn get_file_data<'s>(&'s self, path: &str) -> Result<&'s [u8]> {
         let file = self
             .packed
             .header
@@ -462,6 +371,6 @@ impl PackedTransformer {
         let mm = &self.packed.mm;
         let data_start = file.offset as usize;
         let data_end = data_start + file.size as usize;
-        Ok(mm[data_start..data_end].to_vec())
+        Ok(&mm[data_start..data_end])
     }
 }
