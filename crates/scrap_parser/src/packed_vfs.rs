@@ -314,13 +314,13 @@ impl FileSystem for MultiPack {
 enum PackedOp {
     Delete(Pattern),
     Rename(Pattern, fn(&str) -> String),
-    Patch(Pattern, fn(&str, &[u8]) -> Vec<u8>),
+    Patch(Pattern, fn(&str, &mut Vec<u8>)),
     Add(String, fn() -> Vec<u8>),
 }
 
 struct PatchStep {
     path: String,
-    func: fn(&str, &[u8]) -> Vec<u8>,
+    func: fn(&str, &mut Vec<u8>),
 }
 
 enum PackedDataSource {
@@ -359,7 +359,7 @@ impl PackedTransformer {
         Ok(self)
     }
 
-    pub fn patch(mut self, pattern: &str, func: fn(&str, &[u8]) -> Vec<u8>) -> Result<Self> {
+    pub fn patch(mut self, pattern: &str, func: fn(&str, &mut Vec<u8>)) -> Result<Self> {
         self.ops
             .push(PackedOp::Patch(glob::Pattern::new(pattern)?, func));
         Ok(self)
@@ -412,7 +412,7 @@ impl PackedTransformer {
             };
 
             for patch in entry.patches {
-                data = Cow::Owned((patch.func)(&patch.path, data.as_ref()));
+                (patch.func)(&patch.path, data.to_mut());
             }
 
             output_file.write_all(data.as_ref())?;

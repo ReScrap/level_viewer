@@ -380,9 +380,9 @@ fn main() -> Result<()> {
                     .iter()
                     .any(|e| name.ends_with(e))
                 {
-                    let data: Data = Cursor::new(buffer).read_le().unwrap();
+                    let data: Data = Cursor::new(buffer.as_slice()).read_le().unwrap();
                     buffer.clear();
-                    buffer.write_le(&mut out).unwrap();
+                    data.write_le(&mut Cursor::new(buffer)).unwrap();
                 }
             })?
             .write(&out)?;
