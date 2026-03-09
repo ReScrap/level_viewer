@@ -61,10 +61,11 @@ use pid::Pid;
 use regex::Regex;
 use rhexdump::{rhexdump, rhexdumps};
 use scrap_parser::{
-    packed_vfs::{PackedTransformer}, parser::{
+    packed_vfs::PackedTransformer,
+    parser::{
         self, AniTrackType, AnimTracks, CM3, Data, Level, LightType, NodeData, ParsedData, SM3,
         Vertex, multi_pack_fs::MultiPackFS,
-    }
+    },
 };
 use serde::{Deserialize, Serialize};
 
@@ -372,17 +373,19 @@ fn main() -> Result<()> {
     let out_path = PathBuf::from("packed_out");
     for file in packed_files {
         let out = out_path.join(&file.file_name().unwrap());
-        PackedTransformer::new(&file)?.patch("*", |name, buffer| {
-            println!("{}: {}", name, buffer.len());
-            if [".cm3", ".sm3", ".emi", ".dum", ".amc"]
-                .iter()
-                .any(|e| name.ends_with(e))
-            {
-                let data: Data = Cursor::new(buffer).read_le().unwrap();
-                buffer.clear();
-                buffer.write_le(&mut out).unwrap();
-            }
-            })?.write(&out)?;
+        PackedTransformer::new(&file)?
+            .patch("*", |name, buffer| {
+                println!("{}: {}", name, buffer.len());
+                if [".cm3", ".sm3", ".emi", ".dum", ".amc"]
+                    .iter()
+                    .any(|e| name.ends_with(e))
+                {
+                    let data: Data = Cursor::new(buffer).read_le().unwrap();
+                    buffer.clear();
+                    buffer.write_le(&mut out).unwrap();
+                }
+            })?
+            .write(&out)?;
     }
     return Ok(());
     let fs = MultiPackFS::new(&packed_files)?;
