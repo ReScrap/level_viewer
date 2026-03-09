@@ -13,6 +13,8 @@ use binrw::{args, helpers::until_exclusive, meta::WriteEndian, prelude::*};
 use chrono::{DateTime, Utc, naive::serde::ts_microseconds_option::deserialize};
 use color_eyre::eyre::{Context, Result, anyhow, bail};
 use configparser::ini::{Ini, IniDefault};
+use encoding::{DecoderTrap, Encoding};
+use encoding::{EncoderTrap, all::WINDOWS_1252};
 use enum_iterator::Sequence;
 use indexmap::IndexMap;
 use log::warn;
@@ -25,10 +27,31 @@ use walkdir::WalkDir;
 
 pub type IniData = IndexMap<String, IndexMap<String, Option<String>>>;
 
+fn path_len(path: &str) -> Result<u32> {
+    Ok(WINDOWS_1252
+        .encode(path, EncoderTrap::Strict)
+        .map_err(|e| anyhow!("Failed to encode string: {e}"))?
+        .len()
+        .try_into()?)
+}
+
+
+fn b2s(b: &[u8]) -> Result<String> {
+    WINDOWS_1252.decode(b, DecoderTrap::Strict).map_err(|e| anyhow!("Failed to decode: {e}"))
+}
+fn s2b(s: &str) -> Result<Vec<u8>> {
+    WINDOWS_1252.encode(s, EncoderTrap::Strict).map_err(|e| anyhow!("Failed to encode: {e}"))
+}
+
 #[binrw]
 #[derive(Serialize, Debug, Clone, Deserialize)]
 pub struct PackedEntry {
-    pub path: PascalString,
+    #[br(temp)]
+    #[bw(try_calc=path.len().try_into())]
+    pub path_len: u32,
+    #[br(count=path_len, try_map=|bytes: Vec<u8>| b2s(&bytes))]
+    #[bw(try_map=|s: &String| s2b(s))]
+    pub path: String,
     pub size: u32,
     pub offset: u32,
 }
@@ -1740,7 +1763,7 @@ fn write_ani_blocks(tracks: &Vec<BlockInfo>) -> BinResult<()> {
 
 #[binrw::writer(writer, endian)]
 fn write_nabk_data(data: &Vec<u8>, _compute: bool) -> BinResult<()> {
-    <[u8; 4]>::write_options(&b"NABK", writer, endian, ())?;
+    <[u8; 4]>::write_options(b"NABK", writer, endian, ())?;
     let pos = writer.stream_position()?;
     let size: u32 = data
         .len()
@@ -2064,7 +2087,8 @@ struct EmptyAMC {
 #[bw(import_raw(compute: bool))]
 #[derive(Debug, Serialize, Deserialize)]
 pub struct AMC {
-    #[bw(try_calc = compute_size(self, 4, compute)?.try_into())]
+    // subtract 8 for empty AMC block at the end
+    #[bw(try_calc = compute_size(self, 4+8, compute)?.try_into())]
     size: u32,
     #[br(assert(version==100,"Invalid AMC version"))]
     #[bw(calc = 100u32)]
@@ -2119,7 +2143,8 @@ pub struct TriV104 {
 }
 
 #[binrw]
-#[br(magic = b"TRI\0", import(version: u32))]
+#[brw(magic = b"TRI\0")]
+#[br(import(version: u32))]
 #[bw(import_raw(compute: bool))]
 #[derive(Debug, Serialize, Deserialize)]
 pub struct TRI {

@@ -137,7 +137,7 @@ impl DirectoryTree {
     fn merge(&mut self, files: &[PackedEntry], file_index: usize) {
         for file in files {
             let mut folder = &mut *self;
-            let path: Vec<_> = file.path.string.split('/').collect();
+            let path: Vec<_> = file.path.split('/').collect();
             if let Some((filename, path)) = path.as_slice().split_last() {
                 for part in path {
                     let DirectoryTree::Directory { entries } = folder else {
@@ -214,13 +214,6 @@ impl Seek for FileHandle {
 impl Read for FileHandle {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         self.cursor.read(buf)
-    }
-}
-
-impl FileHandle {
-    fn buffer(&self) -> &[u8] {
-        let idx = self.data.clone();
-        &self.cursor.get_ref()[idx]
     }
 }
 
@@ -314,13 +307,13 @@ impl FileSystem for MultiPack {
 enum PackedOp {
     Delete(Pattern),
     Rename(Pattern, fn(&str) -> String),
-    Patch(Pattern, fn(&str, &mut Vec<u8>)),
+    Patch(Pattern, fn(&str, &mut Vec<u8>) -> Result<()>),
     Add(String, fn() -> Vec<u8>),
 }
 
 struct PatchStep {
     path: String,
-    func: fn(&str, &mut Vec<u8>),
+    func: fn(&str, &mut Vec<u8>) -> Result<()>,
 }
 
 enum PackedDataSource {
@@ -359,7 +352,7 @@ impl PackedTransformer {
         Ok(self)
     }
 
-    pub fn patch(mut self, pattern: &str, func: fn(&str, &mut Vec<u8>)) -> Result<Self> {
+    pub fn patch(mut self, pattern: &str, func: fn(&str, &mut Vec<u8>) -> Result<()>) -> Result<Self> {
         self.ops
             .push(PackedOp::Patch(glob::Pattern::new(pattern)?, func));
         Ok(self)
@@ -380,9 +373,7 @@ impl PackedTransformer {
             files: processed_entries
                 .iter()
                 .map(|entry| PackedEntry {
-                    path: PascalString {
-                        string: entry.path.clone(),
-                    },
+                    path: entry.path.clone(),
                     size: 0,
                     offset: 0,
                 })
@@ -412,7 +403,7 @@ impl PackedTransformer {
             };
 
             for patch in entry.patches {
-                (patch.func)(&patch.path, data.to_mut());
+                (patch.func)(&patch.path, data.to_mut()).context(format!("Error patching {}", patch.path))?;
             }
 
             output_file.write_all(data.as_ref())?;
@@ -426,7 +417,7 @@ impl PackedTransformer {
                 .try_into()
                 .map_err(|_| anyhow!("Packed entry too large for {}", entry.path))?;
             final_entries.push(PackedEntry {
-                path: PascalString { string: entry.path },
+                path: entry.path.clone(),
                 size,
                 offset,
             });
@@ -449,7 +440,7 @@ impl PackedTransformer {
             .iter()
             .enumerate()
             .map(|(index, entry)| ProcessedEntry {
-                path: entry.path.string.clone(),
+                path: entry.path.clone(),
                 source: PackedDataSource::Existing(index),
                 patches: Vec::new(),
             })
@@ -502,9 +493,9 @@ impl PackedTransformer {
         let data_start = entry.offset as usize;
         let data_end = data_start
             .checked_add(entry.size as usize)
-            .ok_or_else(|| anyhow!("Invalid entry range for {}", entry.path.string))?;
+            .ok_or_else(|| anyhow!("Invalid entry range for {}", entry.path))?;
         if data_end > self.packed.mm.len() {
-            bail!("Entry out of bounds: {}", entry.path.string);
+            bail!("Entry out of bounds: {}", entry.path);
         }
         Ok(&self.packed.mm[data_start..data_end])
     }
