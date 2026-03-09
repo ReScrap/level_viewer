@@ -1860,7 +1860,7 @@ pub struct ANI {
     is_active: u32,
     #[bw(try_calc = track_map.len().try_into())]
     num_nodes: u32,
-    #[br(count=num_nodes, map=|data: Vec<u8>| data.iter().map(|&v| (v!=0).then_some(v-1)).collect())]
+    #[br(count=num_nodes, map=|data: Vec<u8>| data.iter().map(|&v| (v!=0).then(|| v-1)).collect())]
     #[bw(map = |value: &Vec<Option<u8>>| encode_track_map(value))]
     pub track_map: Vec<Option<u8>>,
     #[br(map=|v: NABK| v.data)]
