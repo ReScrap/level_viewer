@@ -380,10 +380,13 @@ fn main() -> Result<()> {
                     .iter()
                     .any(|e| name.ends_with(e))
                 {
-                    let data: Data = Cursor::new(buffer.as_slice()).read_le().unwrap();
+                    let data: Data = Cursor::new(buffer.as_slice()).read_le()?;
+                    let json = serde_json::to_string_pretty(&data)?;
+                    let data: Data = serde_json::from_str(&json)?;
                     buffer.clear();
-                    data.write_le(&mut Cursor::new(buffer)).unwrap();
+                    data.write_le(&mut Cursor::new(buffer))?;
                 }
+                Ok(())
             })?
             .write(&out)?;
     }
