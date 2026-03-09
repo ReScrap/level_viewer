@@ -318,6 +318,22 @@ enum PackedOp {
     Add(String, fn() -> Vec<u8>),
 }
 
+struct PatchStep {
+    path: String,
+    func: fn(&str, &[u8]) -> Vec<u8>,
+}
+
+enum PackedDataSource {
+    Existing(usize),
+    Added(fn() -> Vec<u8>),
+}
+
+struct ProcessedEntry {
+    path: String,
+    source: PackedDataSource,
+    patches: Vec<PatchStep>,
+}
+
 pub struct PackedTransformer {
     packed: PackedFile,
     ops: Vec<PackedOp>,
@@ -363,9 +379,9 @@ impl PackedTransformer {
         let header_size = PackedHeader {
             files: processed_entries
                 .iter()
-                .map(|(path, _)| PackedEntry {
+                .map(|entry| PackedEntry {
                     path: PascalString {
-                        string: path.clone(),
+                        string: entry.path.clone(),
                     },
                     size: 0,
                     offset: 0,
@@ -379,10 +395,25 @@ impl PackedTransformer {
         let mut data_offset = header_size;
         let mut final_entries = Vec::with_capacity(processed_entries.len());
 
-        for (path, data) in processed_entries {
+        for entry in processed_entries {
             let offset: u32 = data_offset
                 .try_into()
-                .map_err(|_| anyhow!("Packed offset overflow for {}", path))?;
+                .map_err(|_| anyhow!("Packed offset overflow for {}", entry.path))?;
+
+            let mut data: Cow<[u8]> = match entry.source {
+                PackedDataSource::Existing(index) => {
+                    let original =
+                        self.packed.header.files.get(index).ok_or_else(|| {
+                            anyhow!("Packed source index out of bounds: {}", index)
+                        })?;
+                    Cow::Borrowed(self.get_entry_data(original)?)
+                }
+                PackedDataSource::Added(generator) => Cow::Owned(generator()),
+            };
+
+            for patch in entry.patches {
+                data = Cow::Owned((patch.func)(&patch.path, data.as_ref()));
+            }
 
             output_file.write_all(data.as_ref())?;
             let len = data.len();
@@ -393,9 +424,9 @@ impl PackedTransformer {
 
             let size: u32 = len
                 .try_into()
-                .map_err(|_| anyhow!("Packed entry too large for {}", path))?;
+                .map_err(|_| anyhow!("Packed entry too large for {}", entry.path))?;
             final_entries.push(PackedEntry {
-                path: PascalString { string: path },
+                path: PascalString { string: entry.path },
                 size,
                 offset,
             });
@@ -410,50 +441,57 @@ impl PackedTransformer {
         Ok(())
     }
 
-    fn process_ops<'a>(&'a self) -> Result<Vec<(String, Cow<'a, [u8]>)>> {
-        let mut result: Vec<(String, Cow<'a, [u8]>)> = self
+    fn process_ops(&self) -> Result<Vec<ProcessedEntry>> {
+        let mut result: Vec<ProcessedEntry> = self
             .packed
             .header
             .files
             .iter()
-            .map(|entry| {
-                Ok((
-                    entry.path.string.clone(),
-                    Cow::Borrowed(self.get_entry_data(entry)?),
-                ))
+            .enumerate()
+            .map(|(index, entry)| ProcessedEntry {
+                path: entry.path.string.clone(),
+                source: PackedDataSource::Existing(index),
+                patches: Vec::new(),
             })
-            .collect::<Result<Vec<_>>>()?;
+            .collect();
 
         for op in &self.ops {
             match op {
                 PackedOp::Delete(pattern) => {
-                    result.retain(|(path, _)| !pattern.matches(path));
+                    result.retain(|entry| !pattern.matches(&entry.path));
                 }
                 PackedOp::Rename(pattern, func) => {
-                    for (path, _) in &mut result {
-                        if pattern.matches(path) {
-                            *path = func(path);
+                    for entry in &mut result {
+                        if pattern.matches(&entry.path) {
+                            entry.path = func(&entry.path);
                         }
                     }
                 }
                 PackedOp::Patch(pattern, func) => {
-                    for (path, data) in &mut result {
-                        if pattern.matches(path) {
-                            *data = Cow::Owned(func(path, data.as_ref()));
+                    for entry in &mut result {
+                        if pattern.matches(&entry.path) {
+                            entry.patches.push(PatchStep {
+                                path: entry.path.clone(),
+                                func: *func,
+                            });
                         }
                     }
                 }
                 PackedOp::Add(path, generator) => {
-                    result.push((path.clone(), Cow::Owned(generator())));
+                    result.push(ProcessedEntry {
+                        path: path.clone(),
+                        source: PackedDataSource::Added(*generator),
+                        patches: Vec::new(),
+                    });
                 }
             }
         }
 
         let mut seen = HashSet::with_capacity(result.len());
-        for (path, _) in &result {
-            let key = path.to_ascii_lowercase();
+        for entry in &result {
+            let key = entry.path.to_ascii_lowercase();
             if !seen.insert(key) {
-                bail!("Duplicate path after transform: {}", path);
+                bail!("Duplicate path after transform: {}", entry.path);
             }
         }
 
