@@ -49,7 +49,7 @@ fn s2b(s: &str) -> Result<Vec<u8>> {
 #[derive(Serialize, Debug, Clone, Deserialize)]
 pub struct PackedEntry {
     #[br(temp)]
-    #[bw(try_calc=path.len().try_into())]
+    #[bw(try_calc=path_len(path))]
     pub path_len: u32,
     #[br(count=path_len, try_map=|bytes: Vec<u8>| b2s(&bytes))]
     #[bw(try_map=|s: &String| s2b(s))]
