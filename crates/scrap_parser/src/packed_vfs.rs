@@ -352,7 +352,11 @@ impl PackedTransformer {
         Ok(self)
     }
 
-    pub fn patch(mut self, pattern: &str, func: fn(&str, &mut Vec<u8>) -> Result<()>) -> Result<Self> {
+    pub fn patch(
+        mut self,
+        pattern: &str,
+        func: fn(&str, &mut Vec<u8>) -> Result<()>,
+    ) -> Result<Self> {
         self.ops
             .push(PackedOp::Patch(glob::Pattern::new(pattern)?, func));
         Ok(self)
@@ -403,7 +407,8 @@ impl PackedTransformer {
             };
 
             for patch in entry.patches {
-                (patch.func)(&patch.path, data.to_mut()).context(format!("Error patching {}", patch.path))?;
+                (patch.func)(&patch.path, data.to_mut())
+                    .context(format!("Error patching {}", patch.path))?;
             }
 
             output_file.write_all(data.as_ref())?;

@@ -13,8 +13,7 @@ use binrw::{args, helpers::until_exclusive, meta::WriteEndian, prelude::*};
 use chrono::{DateTime, Utc, naive::serde::ts_microseconds_option::deserialize};
 use color_eyre::eyre::{Context, Result, anyhow, bail};
 use configparser::ini::{Ini, IniDefault};
-use encoding::{DecoderTrap, Encoding};
-use encoding::{EncoderTrap, all::WINDOWS_1252};
+use encoding::{DecoderTrap, EncoderTrap, Encoding, all::WINDOWS_1252};
 use enum_iterator::Sequence;
 use indexmap::IndexMap;
 use log::warn;
@@ -35,12 +34,15 @@ fn path_len(path: &str) -> Result<u32> {
         .try_into()?)
 }
 
-
 fn b2s(b: &[u8]) -> Result<String> {
-    WINDOWS_1252.decode(b, DecoderTrap::Strict).map_err(|e| anyhow!("Failed to decode: {e}"))
+    WINDOWS_1252
+        .decode(b, DecoderTrap::Strict)
+        .map_err(|e| anyhow!("Failed to decode: {e}"))
 }
 fn s2b(s: &str) -> Result<Vec<u8>> {
-    WINDOWS_1252.encode(s, EncoderTrap::Strict).map_err(|e| anyhow!("Failed to encode: {e}"))
+    WINDOWS_1252
+        .encode(s, EncoderTrap::Strict)
+        .map_err(|e| anyhow!("Failed to encode: {e}"))
 }
 
 #[binrw]
@@ -276,6 +278,23 @@ mod string_encoding_tests {
         let out = serde_json::to_string(&parsed).unwrap();
         let out_v: serde_json::Value = serde_json::from_str(&out).unwrap();
         assert_eq!(out_v["skin"]["weights"][1], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn tex_coords_accept_null_and_roundtrip() {
+        #[derive(serde::Serialize, serde::Deserialize)]
+        struct Wrap {
+            tex: super::TexCoords,
+        }
+
+        let json = r#"{"tex":[0.25,null]}"#;
+        let parsed: Wrap = serde_json::from_str(json).unwrap();
+        assert_eq!(parsed.tex.0[0], 0.25);
+        assert!(parsed.tex.0[1].is_nan());
+
+        let out = serde_json::to_string(&parsed).unwrap();
+        let out_v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(out_v["tex"][1], serde_json::Value::Null);
     }
 }
 
@@ -756,7 +775,34 @@ impl RGBA {
 #[derive(Debug, Serialize, Clone, Deserialize)]
 #[br(import(n_dims: usize))]
 #[bw(import(n_dims: usize))]
-pub struct TexCoords(#[br(count=n_dims)] pub Vec<f32>);
+pub struct TexCoords(
+    #[serde(with = "nan_f32_vec_serde")]
+    #[br(count=n_dims)]
+    pub Vec<f32>,
+);
+
+mod nan_f32_vec_serde {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub(super) fn serialize<S>(value: &Vec<f32>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let out: Vec<Option<f32>> = value
+            .iter()
+            .map(|v| if v.is_finite() { Some(*v) } else { None })
+            .collect();
+        out.serialize(serializer)
+    }
+
+    pub(super) fn deserialize<'de, D>(deserializer: D) -> Result<Vec<f32>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = Vec::<Option<f32>>::deserialize(deserializer)?;
+        Ok(value.into_iter().map(|v| v.unwrap_or(f32::NAN)).collect())
+    }
+}
 
 #[binrw]
 #[derive(Debug, Serialize, Clone, Deserialize)]
