@@ -172,20 +172,21 @@ fn encode_pascal_string(string: &str) -> Vec<u8> {
     if string.is_empty() {
         return vec![];
     }
-    // Scrapland stores these pascal strings as raw single-byte chars.
-    // Keep a one-byte-per-codepoint mapping (Latin-1-style) to avoid UTF-8 expansion.
-    let mut bytes: Vec<u8> = string
-        .chars()
-        .map(|c| u8::try_from(c as u32).unwrap_or(b'?'))
-        .collect();
+    // These strings are Windows-1252 encoded in packed/game files.
+    // Use a single-byte encoding to avoid UTF-8 expansion while preserving names.
+    let mut bytes = WINDOWS_1252
+        .encode(string, EncoderTrap::Replace)
+        .expect("windows-1252 encode with replacement should not fail");
     if !bytes.ends_with(&[0]) {
         bytes.push(0)
     }
-    return bytes;
+    bytes
 }
 
 fn decode_pascal_string(bytes: &[u8]) -> String {
-    bytes.iter().map(|&b| b as char).collect()
+    WINDOWS_1252
+        .decode(bytes, DecoderTrap::Replace)
+        .expect("windows-1252 decode with replacement should not fail")
 }
 
 #[cfg(test)]
@@ -208,6 +209,14 @@ mod string_encoding_tests {
     fn pascal_string_encoding_does_not_utf8_expand() {
         let encoded = encode_pascal_string("Señor\0");
         assert_eq!(encoded, b"Se\xF1or\0");
+    }
+
+    #[test]
+    fn pascal_string_decodes_cp1252_symbols() {
+        let raw = [0x80, 0x99, 0x00];
+        let decoded = decode_pascal_string(&raw);
+        assert_eq!(decoded, "€™\0");
+        assert_eq!(encode_pascal_string(&decoded), raw);
     }
 
     #[test]
