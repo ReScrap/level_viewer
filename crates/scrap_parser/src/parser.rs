@@ -1891,17 +1891,21 @@ pub struct NAM {
 #[bw(import_raw(compute: bool))]
 #[derive(Debug, Serialize, Deserialize)]
 pub struct NABK {
+    #[br(temp)]
     #[bw(try_calc = compute_size(self, 8, compute)?.try_into())]
     size: u32,
     #[br(count=size)]
     pub data: Vec<u8>,
 }
 
+// TODO: combine data+tracks fields into tracks: HashMap<u8,(NAM,AnimTracks)> field using `#[br(map=...)]` and `#[bw(map=...)]`
+
 #[binrw]
 #[brw(magic = b"ANI\0")]
 #[bw(import_raw(compute: bool))]
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ANI {
+    #[br(temp)]
     #[bw(try_calc = compute_size(self, 8, compute)?.try_into())]
     size: u32,
     #[br(assert(version==2, "Invalid ANI version"))]
@@ -1919,7 +1923,7 @@ pub struct ANI {
     #[bw(map = |value: &Vec<Option<u8>>| encode_track_map(value))]
     pub track_map: Vec<Option<u8>>,
     #[br(map=|v: NABK| v.data)]
-    #[bw(write_with = write_nabk_data, args(compute))]
+    #[bw(map=|data: &Vec<u8>| NABK{data: data.clone()}, args_raw(compute))]
     pub data: Vec<u8>,
     #[br(count = num_objects)]
     #[bw(args_raw = compute)]
