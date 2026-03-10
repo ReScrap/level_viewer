@@ -352,8 +352,6 @@ fn main() -> Result<()> {
     if *cli.scrapland == *"<auto-detected>" {
         cli.scrapland = find_scrap::get_path();
     }
-    let packed_files = get_packed_files(&cli.scrapland)?;
-    let fs = MultiPackFS::new(&packed_files)?;
 
     if let (Some(path), output) = (
         &cli.path,
@@ -363,6 +361,8 @@ fn main() -> Result<()> {
         tracing_subscriber::FmtSubscriber::builder()
             .with_ansi(true)
             .init();
+        let packed_files = get_packed_files(&cli.scrapland)?;
+        let fs = MultiPackFS::new(&packed_files)?;
         if let Err(e) = run_export(&fs, path, &output) {
             eprintln!("Export failed: {}", e);
             std::process::exit(1);
@@ -372,19 +372,25 @@ fn main() -> Result<()> {
     let packed_files = get_packed_files(&cli.scrapland.join("backup"))?;
     let out_path = PathBuf::from("packed_out");
     for file in packed_files {
-        let out = out_path.join(&file.file_name().unwrap());
+        let out = out_path.join(file.file_name().unwrap());
         PackedTransformer::new(&file)?
             .patch("*", |name, buffer| {
-                println!("{}: {}", name, buffer.len());
-                if [".cm3", ".sm3", ".emi", ".dum", ".amc"]
+                if [".emi"]
                     .iter()
                     .any(|e| name.ends_with(e))
                 {
-                    let data: Data = Cursor::new(buffer.as_slice()).read_le()?;
-                    let json = serde_json::to_string_pretty(&data)?;
-                    let data: Data = serde_json::from_str(&json)?;
+                    let mut data: Data = Cursor::new(buffer.as_slice()).read_le()?;
+                    println!("Rewriting {name}");
+                    if let Data::EMI(emi) = &mut data {
+                        emi.materials.iter_mut().for_each(|(_,mat)| {
+                            // dbg!(mat.spec_mult,mat.spec_power);
+                            mat.spec_mult=1.0;
+                            mat.spec_power=1.0;
+                        })
+                    }
                     buffer.clear();
-                    data.write_le(&mut Cursor::new(buffer))?;
+                    let mut cur = Cursor::new(buffer);
+                    data.write_le(&mut cur)?;
                 }
                 Ok(())
             })?
