@@ -81,3 +81,4 @@ dds = "0.2.0"
 flate2 = "1.1.9"
 crossbeam-channel = "0.5.15"
 scrap_parser = { path = "crates/scrap_parser" }
+rand = "0.10.0"
