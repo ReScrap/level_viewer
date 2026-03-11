@@ -1726,7 +1726,7 @@ pub struct BlockInfo {
     pub track_type: AniTrackType,
 }
 
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct AnimFrame {
     pub pos: Option<[f32; 3]>,
     pub rot: Option<[f32; 4]>,
@@ -1736,7 +1736,7 @@ pub struct AnimFrame {
     pub visibility: Option<bool>,
 }
 
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct AnimTracks {
     pub pos: Option<Vec<[f32; 3]>>,
     pub rot: Option<Vec<[f32; 4]>>,
@@ -1767,6 +1767,183 @@ where
     let mut out = Vec::with_capacity(data.len() / std::mem::size_of::<T>().max(1));
     while (reader.position() as usize) < data.len() {
         out.push(reader.read_le()?);
+    }
+    Ok(out)
+}
+
+fn parse_anim_tracks_from_block_data(blocks: &[BlockInfo], data: &[u8]) -> Result<AnimTracks> {
+    let mut offset = 0usize;
+    let mut out = AnimTracks::default();
+    for block in blocks {
+        let end = offset
+            .checked_add(block.size)
+            .ok_or_else(|| anyhow!("ANI block size overflow"))?;
+        let raw = data
+            .get(offset..end)
+            .ok_or_else(|| anyhow!("ANI/NABK block out of bounds"))?;
+        offset = end;
+        let payload = if block.optimized && block.stream {
+            let mut reader = Cursor::new(raw);
+            let header: AniStreamHeader = reader.read_le()?;
+            if header.size as usize != block.size {
+                bail!(
+                    "invalid ANI streamed block size: {} != {}",
+                    header.size,
+                    block.size
+                );
+            }
+            &raw[reader.position() as usize..]
+        } else {
+            raw
+        };
+        match block.track_type {
+            AniTrackType::Position => out.pos = Some(parse_track_data(payload)?),
+            AniTrackType::Rotation => out.rot = Some(parse_track_data(payload)?),
+            AniTrackType::FOV => out.fov = Some(parse_track_data(payload)?),
+            AniTrackType::Color => out.color = Some(parse_track_data(payload)?),
+            AniTrackType::Intensity => out.intensity = Some(parse_track_data(payload)?),
+            AniTrackType::Visibility => {
+                out.visibility = Some(
+                    parse_track_data(payload)?
+                        .into_iter()
+                        .map(|v: u8| v != 0)
+                        .collect(),
+                )
+            }
+            AniTrackType::EVA => (),
+        }
+    }
+    Ok(out)
+}
+
+fn write_block_payload(block: &BlockInfo, nam: &NAM, tracks: &AnimTracks) -> BinResult<Vec<u8>> {
+    fn write_values<T>(values: &[T]) -> BinResult<Vec<u8>>
+    where
+        T: for<'a> BinWrite<Args<'a> = ()>,
+    {
+        let mut writer = Cursor::new(Vec::new());
+        for value in values {
+            value.write_le(&mut writer)?;
+        }
+        Ok(writer.into_inner())
+    }
+
+    let payload = match block.track_type {
+        AniTrackType::Position => write_values(tracks.pos.as_deref().ok_or_else(|| {
+            binrw::Error::AssertFail {
+                pos: 0,
+                message: "missing ANI position track payload".into(),
+            }
+        })?)?,
+        AniTrackType::Rotation => write_values(tracks.rot.as_deref().ok_or_else(|| {
+            binrw::Error::AssertFail {
+                pos: 0,
+                message: "missing ANI rotation track payload".into(),
+            }
+        })?)?,
+        AniTrackType::FOV => write_values(tracks.fov.as_deref().ok_or_else(|| {
+            binrw::Error::AssertFail {
+                pos: 0,
+                message: "missing ANI FOV track payload".into(),
+            }
+        })?)?,
+        AniTrackType::Color => write_values(tracks.color.as_deref().ok_or_else(|| {
+            binrw::Error::AssertFail {
+                pos: 0,
+                message: "missing ANI color track payload".into(),
+            }
+        })?)?,
+        AniTrackType::Intensity => write_values(tracks.intensity.as_deref().ok_or_else(|| {
+            binrw::Error::AssertFail {
+                pos: 0,
+                message: "missing ANI intensity track payload".into(),
+            }
+        })?)?,
+        AniTrackType::Visibility => {
+            let values = tracks.visibility.as_deref().ok_or_else(|| binrw::Error::AssertFail {
+                pos: 0,
+                message: "missing ANI visibility track payload".into(),
+            })?;
+            let packed: Vec<u8> = values.iter().map(|&v| u8::from(v)).collect();
+            write_values(&packed)?
+        }
+        AniTrackType::EVA => Vec::new(),
+    };
+
+    let mut out = if block.optimized && block.stream {
+        let start_frame: u16 = nam
+            .start_frame
+            .try_into()
+            .map_err(|_| binrw::Error::AssertFail {
+                pos: 0,
+                message: "ANI stream start_frame does not fit in u16".into(),
+            })?;
+        let num_frames: u16 = nam.frames.try_into().map_err(|_| binrw::Error::AssertFail {
+            pos: 0,
+            message: "ANI stream frame count does not fit in u16".into(),
+        })?;
+        let size: u16 = block.size.try_into().map_err(|_| binrw::Error::AssertFail {
+            pos: 0,
+            message: "ANI stream block size does not fit in u16".into(),
+        })?;
+        let mut writer = Cursor::new(Vec::new());
+        AniStreamHeader {
+            size,
+            start_frame,
+            num_frames,
+        }
+        .write_le(&mut writer)?;
+        payload.write_le(&mut writer)?;
+        writer.into_inner()
+    } else {
+        payload
+    };
+
+    if out.len() != block.size {
+        return Err(binrw::Error::AssertFail {
+            pos: 0,
+            message: format!(
+                "ANI block payload size mismatch for {:?}: {} != {}",
+                block.track_type,
+                out.len(),
+                block.size
+            ),
+        });
+    }
+    Ok(std::mem::take(&mut out))
+}
+
+fn ordered_ani_tracks(
+    tracks: &HashMap<u8, (NAM, AnimTracks)>,
+) -> BinResult<Vec<(u8, &NAM, &AnimTracks)>> {
+    let mut ordered: Vec<(u8, &NAM, &AnimTracks)> = tracks
+        .iter()
+        .map(|(idx, (nam, track_data))| (*idx, nam, track_data))
+        .collect();
+    ordered.sort_unstable_by_key(|(idx, _, _)| *idx);
+    for (expected, (actual, _, _)) in ordered.iter().enumerate() {
+        let expected = u8::try_from(expected).map_err(|_| binrw::Error::AssertFail {
+            pos: 0,
+            message: "ANI supports at most 256 tracks".into(),
+        })?;
+        if *actual != expected {
+            return Err(binrw::Error::AssertFail {
+                pos: 0,
+                message: format!(
+                    "ANI track map must be contiguous and zero-based (missing index {expected})"
+                ),
+            });
+        }
+    }
+    Ok(ordered)
+}
+
+fn build_ani_nabk_data(tracks: &HashMap<u8, (NAM, AnimTracks)>) -> BinResult<Vec<u8>> {
+    let mut out = Vec::new();
+    for (_, nam, track_data) in ordered_ani_tracks(tracks)? {
+        for block in &nam.tracks {
+            out.extend(write_block_payload(block, nam, track_data)?);
+        }
     }
     Ok(out)
 }
@@ -1817,22 +1994,6 @@ fn write_ani_blocks(tracks: &Vec<BlockInfo>) -> BinResult<()> {
 }
 
 #[binrw::writer(writer, endian)]
-fn write_nabk_data(data: &Vec<u8>, _compute: bool) -> BinResult<()> {
-    <[u8; 4]>::write_options(b"NABK", writer, endian, ())?;
-    let pos = writer.stream_position()?;
-    let size: u32 = data
-        .len()
-        .try_into()
-        .map_err(|_| binrw::Error::AssertFail {
-            pos,
-            message: "NABK data too large".into(),
-        })?;
-    size.write_options(writer, endian, ())?;
-    data.write_options(writer, endian, ())?;
-    Ok(())
-}
-
-#[binrw::writer(writer, endian)]
 fn write_materials(materials: &Vec<(u32, MAT)>, compute: bool) -> BinResult<()> {
     for (key, mat) in materials {
         key.write_options(writer, endian, ())?;
@@ -1851,11 +2012,58 @@ fn write_emi_textures(maps: &Vec<EMI_Textures>) -> BinResult<()> {
 }
 
 #[binrw]
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct AniStreamHeader {
     size: u16,
     start_frame: u16,
     num_frames: u16,
+}
+
+#[binrw::parser(reader, endian)]
+fn parse_ani_track_entries(
+    num_objects: u32,
+    data: &Vec<u8>,
+) -> BinResult<HashMap<u8, (NAM, AnimTracks)>> {
+    let mut tracks = HashMap::new();
+    let mut offset = 0usize;
+    for idx in 0..num_objects {
+        let nam = NAM::read_options(reader, endian, ())?;
+        let remaining = data.get(offset..).ok_or_else(|| binrw::Error::AssertFail {
+            pos: 0,
+            message: "ANI/NABK track offset out of bounds".into(),
+        })?;
+        let track_data =
+            parse_anim_tracks_from_block_data(&nam.tracks, remaining).map_err(|err| {
+                binrw::Error::AssertFail {
+                    pos: 0,
+                    message: err.to_string(),
+                }
+            })?;
+        let consumed: usize = nam.tracks.iter().map(|b| b.size).sum();
+        offset = offset
+            .checked_add(consumed)
+            .ok_or_else(|| binrw::Error::AssertFail {
+                pos: 0,
+                message: "ANI data offset overflow".into(),
+            })?;
+        let key: u8 = idx.try_into().map_err(|_| binrw::Error::AssertFail {
+            pos: 0,
+            message: "ANI supports at most 256 tracks".into(),
+        })?;
+        tracks.insert(key, (nam, track_data));
+    }
+    Ok(tracks)
+}
+
+#[binrw::writer(writer, endian)]
+fn write_ani_track_entries(
+    tracks: &HashMap<u8, (NAM, AnimTracks)>,
+    compute: bool,
+) -> BinResult<()> {
+    for (_, nam, _) in ordered_ani_tracks(tracks)? {
+        nam.write_options(writer, endian, compute)?;
+    }
+    Ok(())
 }
 
 #[binrw]
@@ -1898,8 +2106,6 @@ pub struct NABK {
     pub data: Vec<u8>,
 }
 
-// TODO: combine data+tracks fields into tracks: HashMap<u8,(NAM,AnimTracks)> field using `#[br(map=...)]` and `#[bw(map=...)]`
-
 #[binrw]
 #[brw(magic = b"ANI\0")]
 #[bw(import_raw(compute: bool))]
@@ -1922,68 +2128,20 @@ pub struct ANI {
     #[br(count=num_nodes, map=|data: Vec<u8>| data.iter().map(|&v| (v!=0).then(|| v-1)).collect())]
     #[bw(map = |value: &Vec<Option<u8>>| encode_track_map(value))]
     pub track_map: Vec<Option<u8>>,
-    #[br(map=|v: NABK| v.data)]
-    #[bw(map=|data: &Vec<u8>| NABK{data: data.clone()}, args_raw(compute))]
-    pub data: Vec<u8>,
-    #[br(count = num_objects)]
+    #[bw(try_map = |_: &NABK| build_ani_nabk_data(tracks).map(|data| NABK { data }))]
     #[bw(args_raw = compute)]
-    pub tracks: Vec<NAM>,
+    data: NABK,
+    #[br(parse_with = parse_ani_track_entries, args(num_objects, &data.data))]
+    #[bw(write_with = write_ani_track_entries, args(compute))]
+    pub tracks: HashMap<u8, (NAM, AnimTracks)>,
 }
 
 impl ANI {
     pub fn get_track(&self, index: usize) -> Result<Option<AnimTracks>> {
-        let Some(track) = self.tracks.get(index) else {
+        let Some(index) = u8::try_from(index).ok() else {
             return Ok(None);
         };
-        let mut offset: usize = self
-            .tracks
-            .iter()
-            .take(index)
-            .flat_map(|t| t.tracks.iter())
-            .map(|b| b.size)
-            .sum();
-        let mut out = AnimTracks::default();
-        for block in &track.tracks {
-            let end = offset
-                .checked_add(block.size)
-                .ok_or_else(|| anyhow!("ANI block size overflow"))?;
-            let raw = self
-                .data
-                .get(offset..end)
-                .ok_or_else(|| anyhow!("ANI/NABK block out of bounds"))?;
-            offset = end;
-            let payload = if block.optimized && block.stream {
-                let mut reader = Cursor::new(raw);
-                let header: AniStreamHeader = reader.read_le()?;
-                if header.size as usize != block.size {
-                    bail!(
-                        "invalid ANI streamed block size: {} != {}",
-                        header.size,
-                        block.size
-                    );
-                }
-                &raw[reader.position() as usize..]
-            } else {
-                raw
-            };
-            match block.track_type {
-                AniTrackType::Position => out.pos = Some(parse_track_data(payload)?),
-                AniTrackType::Rotation => out.rot = Some(parse_track_data(payload)?),
-                AniTrackType::FOV => out.fov = Some(parse_track_data(payload)?),
-                AniTrackType::Color => out.color = Some(parse_track_data(payload)?),
-                AniTrackType::Intensity => out.intensity = Some(parse_track_data(payload)?),
-                AniTrackType::Visibility => {
-                    out.visibility = Some(
-                        parse_track_data(payload)?
-                            .into_iter()
-                            .map(|v: u8| v != 0)
-                            .collect(),
-                    )
-                }
-                AniTrackType::EVA => (),
-            }
-        }
-        Ok(Some(out))
+        Ok(self.tracks.get(&index).map(|(_, track_data)| track_data.clone()))
     }
 }
 
