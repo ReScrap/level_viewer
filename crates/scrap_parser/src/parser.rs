@@ -46,7 +46,7 @@ fn s2b(s: &str) -> Result<Vec<u8>> {
 }
 
 #[binrw]
-#[derive(Serialize, Debug, Clone, Deserialize)]
+#[derive(Serialize, Debug, Clone, Deserialize, facet::Facet)]
 pub struct PackedEntry {
     #[br(temp)]
     #[bw(try_calc=path_len(path))]
@@ -60,7 +60,7 @@ pub struct PackedEntry {
 
 #[binrw]
 #[brw(magic = b"BFPK")]
-#[derive(Serialize, Debug, Deserialize)]
+#[derive(Serialize, Debug, Deserialize, facet::Facet)]
 pub struct PackedHeader {
     #[br(temp,assert(version==0))]
     #[bw(calc = 0u32)]
@@ -82,7 +82,7 @@ impl PackedHeader {
 }
 
 #[binrw]
-#[derive(Serialize, Debug, Deserialize)]
+#[derive(Serialize, Debug, Deserialize, facet::Facet)]
 pub struct Table<
     const SIZE: u32,
     T: for<'a> BinRead<Args<'a> = ()> + for<'a> BinWrite<Args<'a> = ()> + 'static,
@@ -106,7 +106,7 @@ pub struct Table<
 
 #[binrw]
 #[bw(import_raw(compute: bool))]
-#[derive(Clone)]
+#[derive(Clone, facet::Facet)]
 pub struct Optional<T: for<'a> BinRead<Args<'a> = ()> + for<'a> BinWrite<Args<'a> = bool>> {
     #[br(temp)]
     #[bw(calc = u32::from(value.is_some()))]
@@ -274,7 +274,7 @@ mod string_encoding_tests {
 
     #[test]
     fn md3d_skin_weights_accept_null_and_roundtrip() {
-        #[derive(serde::Serialize, serde::Deserialize)]
+        #[derive(serde::Serialize, serde::Deserialize, facet::Facet)]
         struct Wrap {
             skin: super::MD3D_Skin,
         }
@@ -291,7 +291,7 @@ mod string_encoding_tests {
 
     #[test]
     fn tex_coords_accept_null_and_roundtrip() {
-        #[derive(serde::Serialize, serde::Deserialize)]
+        #[derive(serde::Serialize, serde::Deserialize, facet::Facet)]
         struct Wrap {
             tex: super::TexCoords,
         }
@@ -308,7 +308,7 @@ mod string_encoding_tests {
 }
 
 #[binrw]
-#[derive(Clone)]
+#[derive(Clone, facet::Facet)]
 pub struct PascalString {
     #[br(temp)]
     #[bw(try_calc = encode_pascal_string(string).len().try_into())]
@@ -365,7 +365,7 @@ impl Debug for PascalString {
 }
 
 #[binrw]
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, facet::Facet)]
 pub struct IniSection {
     #[br(temp)]
     #[bw(try_calc = sections.len().try_into())]
@@ -378,7 +378,7 @@ pub struct IniSection {
 #[binrw]
 #[brw(magic = b"INI\0")]
 #[bw(import_raw(compute: bool))]
-#[derive(Debug)]
+#[derive(Debug, facet::Facet)]
 pub struct INI {
     #[br(temp)]
     #[bw(try_calc = compute_size(self, 8, compute)?.try_into())]
@@ -766,7 +766,7 @@ mod ini_roundtrip_tests {
 }
 
 #[binrw]
-#[derive(Debug, Serialize, Clone, Deserialize)]
+#[derive(Debug, Serialize, Clone, Deserialize, facet::Facet)]
 pub struct RGBA {
     pub r: u8,
     pub g: u8,
@@ -781,7 +781,7 @@ impl RGBA {
 }
 
 #[binrw]
-#[derive(Debug, Serialize, Clone, Deserialize)]
+#[derive(Debug, Serialize, Clone, Deserialize, facet::Facet)]
 #[br(import(n_dims: usize))]
 #[bw(import(n_dims: usize))]
 pub struct TexCoords(
@@ -814,7 +814,7 @@ mod nan_f32_vec_serde {
 }
 
 #[binrw]
-#[derive(Debug, Serialize, Clone, Deserialize)]
+#[derive(Debug, Serialize, Clone, Deserialize, facet::Facet)]
 #[br(import(vert_fmt: FVF))]
 #[bw(import(vert_fmt: FVF))]
 // https://github.com/elishacloud/dxwrapper/blob/23ffb74c4c93c4c760bb5f1de347a0b039897210/ddraw/IDirect3DDeviceX.cpp#L2642
@@ -849,7 +849,8 @@ pub struct Vertex {
 }
 
 #[bitsize(3)]
-#[derive(Debug, Serialize, PartialEq, Eq, TryFromBits, Deserialize)]
+#[derive(Debug, Serialize, PartialEq, Eq, TryFromBits, Deserialize, facet::Facet)]
+#[repr(u8)]
 pub enum Pos {
     XYZ,
     XYZRHW,
@@ -863,6 +864,7 @@ pub enum Pos {
 #[bitsize(32)]
 #[derive(
     DebugBits, Serialize, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, TryFromBits, Deserialize,
+    facet::Facet,
 )]
 pub struct FVF {
     reserved: bool,
@@ -943,7 +945,7 @@ fn vertex_format_from_id(fmt_id: u32, fmt: u32) -> Result<FVF> {
 #[binrw]
 #[br(import(fmt_id: u32))]
 #[bw(import(fmt_id: u32))]
-#[derive(Debug, Serialize, Clone, Deserialize)]
+#[derive(Debug, Serialize, Clone, Deserialize, facet::Facet)]
 pub struct LFVFInner {
     #[br(try_map=|v:  u32| vertex_format_from_id(fmt_id,v))]
     #[bw(map = |value: &FVF| u32::from(*value))]
@@ -962,7 +964,7 @@ pub struct LFVFInner {
 #[binrw]
 #[brw(magic = b"LFVF")]
 #[bw(import_raw(compute: bool))]
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, facet::Facet)]
 pub struct LFVF {
     #[bw(try_calc = compute_size(self, 8, compute)?.try_into())]
     size: u32,
@@ -977,7 +979,7 @@ pub struct LFVF {
 }
 
 #[binrw]
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, facet::Facet)]
 pub struct MD3D_Tris {
     #[bw(try_calc = tris.len().try_into())]
     num_tris: u32,
@@ -989,14 +991,14 @@ pub struct MD3D_Tris {
 }
 
 #[binrw]
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, facet::Facet)]
 pub struct MD3D_TriSeg {
     plane_distance_xor: u32,
     pub normal: [f32; 3],
 }
 
 #[binrw]
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, facet::Facet)]
 pub struct MD3D_Segment {
     triangle_a_index: i16,
     triangle_b_index: i16,
@@ -1005,7 +1007,7 @@ pub struct MD3D_Segment {
 }
 
 #[binrw]
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, facet::Facet)]
 pub struct MD3D_Skin {
     pub influence_count: u8,
     pub bone_indices: [u8; 3],
@@ -1063,7 +1065,7 @@ mod scale_serde {
 #[binrw]
 #[brw(magic = b"MD3D")]
 #[bw(import_raw(compute: bool))]
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, facet::Facet)]
 pub struct MD3D {
     #[bw(try_calc = compute_size(self, 8, compute)?.try_into())]
     size: u32,
@@ -1100,8 +1102,9 @@ pub struct MD3D {
 }
 
 #[binread]
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, facet::Facet)]
 #[serde(tag = "type")]
+#[repr(u32)]
 pub enum NodeData {
     #[brw(magic = 0x0u32)]
     Dummy,
@@ -1171,7 +1174,7 @@ impl BinWrite for NodeData {
 #[binrw]
 #[brw(magic = b"SPR3")]
 #[bw(import_raw(compute: bool))]
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, facet::Facet)]
 pub struct SPR3 {
     #[bw(try_calc = compute_size(self, 8, compute)?.try_into())]
     size: u32,
@@ -1188,7 +1191,7 @@ pub struct SPR3 {
 #[binrw]
 #[brw(magic = b"SUEL")]
 #[bw(import_raw(compute: bool))]
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, facet::Facet)]
 pub struct SUEL {
     #[bw(try_calc = compute_size(self, 8, compute)?.try_into())]
     size: u32,
@@ -1205,7 +1208,7 @@ pub struct SUEL {
 #[binrw]
 #[brw(magic = b"CAM\0")]
 #[bw(import_raw(compute: bool))]
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, facet::Facet)]
 pub struct CAM {
     #[bw(try_calc = compute_size(self, 8, compute)?.try_into())]
     size: u32,
@@ -1226,7 +1229,7 @@ pub struct CAM {
 #[binrw]
 #[brw(repr=u32)]
 #[repr(u32)]
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, facet::Facet)]
 pub enum LightType {
     Point = 5000,
     Spot = 5001,
@@ -1236,7 +1239,7 @@ pub enum LightType {
 #[binrw]
 #[brw(magic = b"LUZ\0")]
 #[bw(import_raw(compute: bool))]
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, facet::Facet)]
 pub struct LUZ {
     #[bw(try_calc = compute_size(self, 8, compute)?.try_into())]
     size: u32,
@@ -1263,7 +1266,7 @@ pub struct LUZ {
 #[binrw]
 #[brw(magic = b"PORT")]
 #[bw(import_raw(compute: bool))]
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, facet::Facet)]
 pub struct PORT {
     #[bw(try_calc = compute_size(self, 8, compute)?.try_into())]
     size: u32,
@@ -1275,7 +1278,7 @@ pub struct PORT {
     height: f32,
 }
 
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Sequence, Serialize, ToPrimitive, Deserialize)]
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Sequence, Serialize, ToPrimitive, Deserialize, facet::Facet)]
 #[repr(u8)]
 pub enum NodeFlags {
     ROOT,
@@ -1323,7 +1326,7 @@ fn encode_node_flags(flags: &BTreeSet<NodeFlags>) -> u32 {
 
 #[binrw]
 #[bw(import_raw(compute: bool))]
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, facet::Facet)]
 pub struct Node {
     pub object_index: i32,
     pub table_index: i32,
@@ -1351,7 +1354,7 @@ pub struct Node {
 #[binrw]
 #[brw(magic = b"MAP\0")]
 #[bw(import_raw(compute: bool))]
-#[derive(Debug, Serialize, Clone, Deserialize)]
+#[derive(Debug, Serialize, Clone, Deserialize, facet::Facet)]
 pub struct MAP {
     #[bw(try_calc = compute_size(self, 8, compute)?.try_into())]
     size: u32,
@@ -1378,7 +1381,8 @@ pub struct MAP {
     pub angle: Option<f32>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, facet::Facet)]
+#[repr(u8)]
 pub enum TextureType {
     None,
     FxLava,
@@ -1422,6 +1426,7 @@ fn encode_texture_type(value: &TextureType) -> u8 {
     Serialize,
     ToPrimitive,
     Deserialize,
+    facet::Facet,
 )]
 
 pub enum BlendMode {
@@ -1455,6 +1460,7 @@ pub enum BlendMode {
     Serialize,
     ToPrimitive,
     Deserialize,
+    facet::Facet,
 )]
 pub enum CmpFunc {
     Never = 1,
@@ -1474,6 +1480,7 @@ pub enum CmpFunc {
 
 #[derive(
     Debug, PartialEq, Eq, PartialOrd, Ord, Sequence, Serialize, ToPrimitive, Clone, Deserialize,
+    facet::Facet,
 )]
 #[repr(u8)]
 pub enum MatPropAttrib {
@@ -1510,7 +1517,7 @@ fn encode_mat_prop_flags(flags: &BTreeSet<MatPropAttrib>) -> u16 {
 }
 
 #[binrw]
-#[derive(Debug, Serialize, Clone, Deserialize)]
+#[derive(Debug, Serialize, Clone, Deserialize, facet::Facet)]
 pub struct MatProps {
     #[br(assert(sub_material==0))]
     pub sub_material: u32,
@@ -1550,7 +1557,7 @@ fn write_mat_maps(maps: &[Optional<MAP>; 5], version: u32, compute: bool) -> Bin
 #[binrw]
 #[brw(magic = b"MAT\0")]
 #[bw(import_raw(compute: bool))]
-#[derive(Debug, Serialize, Clone, Deserialize)]
+#[derive(Debug, Serialize, Clone, Deserialize, facet::Facet)]
 pub struct MAT {
     #[bw(try_calc = compute_size(self, 8, compute)?.try_into())]
     size: u32,
@@ -1573,7 +1580,7 @@ pub struct MAT {
 }
 
 #[binrw]
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, facet::Facet)]
 pub struct LightColor {
     pub color: RGBA,
     pub intensity: f32,
@@ -1582,7 +1589,7 @@ pub struct LightColor {
 #[binrw]
 #[brw(magic = b"SCN\0")]
 #[bw(import_raw(compute: bool))]
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, facet::Facet)]
 pub struct SCN {
     // 0x650220
     #[bw(try_calc = compute_size(self, 8, compute)?.try_into())]
@@ -1629,7 +1636,7 @@ fn convert_timestamp(dt: u32) -> Result<DateTime<Utc>> {
 
 #[binrw]
 #[bw(import_raw(compute: bool))]
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, facet::Facet)]
 struct VertexAnim {
     #[bw(try_calc = tris.len().try_into())]
     num_triangles: u32,
@@ -1641,7 +1648,7 @@ struct VertexAnim {
 #[binrw]
 #[brw(magic = b"EVA\0")]
 #[bw(import_raw(compute: bool))]
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, facet::Facet)]
 pub struct EVA {
     #[bw(try_calc = compute_size(self, 8, compute)?.try_into())]
     size: u32,
@@ -1667,6 +1674,7 @@ pub struct EVA {
     Serialize,
     ToPrimitive,
     Deserialize,
+    facet::Facet,
 )]
 #[repr(u8)]
 pub enum AniTrackType {
@@ -1717,7 +1725,7 @@ fn encode_track_map(track_map: &[Option<u8>]) -> Vec<u8> {
         .collect()
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, facet::Facet)]
 pub struct BlockInfo {
     pub size: usize,
     pub elem_size: usize,
@@ -1726,7 +1734,7 @@ pub struct BlockInfo {
     pub track_type: AniTrackType,
 }
 
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize, facet::Facet)]
 pub struct AnimFrame {
     pub pos: Option<[f32; 3]>,
     pub rot: Option<[f32; 4]>,
@@ -1736,7 +1744,7 @@ pub struct AnimFrame {
     pub visibility: Option<bool>,
 }
 
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize, facet::Facet)]
 pub struct AnimTracks {
     pub pos: Option<Vec<[f32; 3]>>,
     pub rot: Option<Vec<[f32; 4]>>,
@@ -2012,7 +2020,7 @@ fn write_emi_textures(maps: &Vec<EMI_Textures>) -> BinResult<()> {
 }
 
 #[binrw]
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, facet::Facet)]
 struct AniStreamHeader {
     size: u16,
     start_frame: u16,
@@ -2069,7 +2077,7 @@ fn write_ani_track_entries(
 #[binrw]
 #[brw(magic = b"NAM\0")]
 #[bw(import_raw(compute: bool))]
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, facet::Facet)]
 pub struct NAM {
     #[bw(try_calc = compute_size(self, 8, compute)?.try_into())]
     size: u32,
@@ -2097,7 +2105,7 @@ pub struct NAM {
 #[binrw]
 #[brw(magic = b"NABK")]
 #[bw(import_raw(compute: bool))]
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, facet::Facet)]
 pub struct NABK {
     #[br(temp)]
     #[bw(try_calc = compute_size(self, 8, compute)?.try_into())]
@@ -2109,7 +2117,7 @@ pub struct NABK {
 #[binrw]
 #[brw(magic = b"ANI\0")]
 #[bw(import_raw(compute: bool))]
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, facet::Facet)]
 pub struct ANI {
     #[br(temp)]
     #[bw(try_calc = compute_size(self, 8, compute)?.try_into())]
@@ -2147,7 +2155,7 @@ impl ANI {
 
 #[binrw]
 #[bw(import_raw(compute: bool))]
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, facet::Facet)]
 pub struct SM3 {
     #[bw(try_calc = compute_size(self, 4, compute)?.try_into())]
     size: u32,
@@ -2178,7 +2186,7 @@ impl SM3 {
 
 #[binrw]
 #[bw(import_raw(compute: bool))]
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, facet::Facet)]
 pub struct CM3 {
     #[bw(try_calc = compute_size(self, 4, compute)?.try_into())]
     size: u32,
@@ -2209,7 +2217,7 @@ impl CM3 {
 
 #[binrw]
 #[bw(import_raw(compute: bool))]
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, facet::Facet)]
 pub struct Dummy {
     has_next: u32,
     pub name: PascalString,
@@ -2221,7 +2229,7 @@ pub struct Dummy {
 
 #[binrw]
 #[bw(import_raw(compute: bool))]
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, facet::Facet)]
 pub struct DUM {
     #[bw(try_calc = compute_size(self, 4, compute)?.try_into())]
     size: u32,
@@ -2241,7 +2249,7 @@ pub struct DUM {
 #[binrw]
 #[brw(magic = b"QUAD")]
 #[bw(import_raw(compute: bool))]
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, facet::Facet)]
 pub struct QUAD {
     #[bw(try_calc = compute_size(self, 8, compute)?.try_into())]
     size: u32,
@@ -2257,7 +2265,7 @@ pub struct QUAD {
 }
 
 #[binrw]
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, facet::Facet)]
 pub struct CMSH_Tri {
     cache_stamp: u32,
     pub normal: [f32; 3],
@@ -2269,7 +2277,7 @@ pub struct CMSH_Tri {
 #[binrw]
 #[brw(magic = b"CMSH")]
 #[bw(import_raw(compute: bool))]
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, facet::Facet)]
 pub struct CMSH {
     #[bw(try_calc = compute_size(self, 8, compute)?.try_into())]
     size: u32,
@@ -2292,7 +2300,7 @@ pub struct CMSH {
 
 #[binrw]
 #[brw(magic = b"AMC\0")]
-#[derive(Debug, Serialize, Default, Deserialize)]
+#[derive(Debug, Serialize, Default, Deserialize, facet::Facet)]
 struct EmptyAMC {
     #[br(assert(size==0))]
     #[bw(calc = 0u32)]
@@ -2302,7 +2310,7 @@ struct EmptyAMC {
 // TODO: OG game uses version_code==1
 #[binrw]
 #[bw(import_raw(compute: bool))]
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, facet::Facet)]
 pub struct AMC {
     // subtract 8 for empty AMC block at the end
     #[bw(try_calc = compute_size(self, 4+8, compute)?.try_into())]
@@ -2342,7 +2350,7 @@ pub struct AMC {
 #[binrw]
 #[br(import(version: u32))]
 #[bw(import_raw(compute: bool))]
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, facet::Facet)]
 pub struct TriV104 {
     #[br(if(version>=0x69))]
     #[bw(if(zone_name.is_some()))]
@@ -2363,7 +2371,7 @@ pub struct TriV104 {
 #[brw(magic = b"TRI\0")]
 #[br(import(version: u32))]
 #[bw(import_raw(compute: bool))]
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, facet::Facet)]
 pub struct TRI {
     #[bw(try_calc = compute_size(self, 8, compute)?.try_into())]
     size: u32,
@@ -2376,7 +2384,7 @@ pub struct TRI {
 }
 
 #[binrw]
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, facet::Facet)]
 pub struct EMI_Textures {
     pub key: u32,
     #[br(if(key!=0))]
@@ -2386,7 +2394,7 @@ pub struct EMI_Textures {
 
 #[binrw]
 #[bw(import_raw(compute: bool))]
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, facet::Facet)]
 pub struct EMI {
     #[bw(try_calc = compute_size(self, 4, compute)?.try_into())]
     size: u32,
@@ -2426,8 +2434,9 @@ impl EMI {
 }
 
 #[binrw]
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, facet::Facet)]
 #[serde(tag = "type")]
+#[repr(u8)]
 pub enum Data {
     #[brw(magic = b"SM3\0")]
     SM3(SM3),
@@ -2483,7 +2492,7 @@ fn load_ini(path: &VfsPath) -> IniData {
     Ini::new().read(data).unwrap_or_default()
 }
 
-#[derive(Serialize, Debug, Deserialize)]
+#[derive(Serialize, Debug, Deserialize, facet::Facet)]
 pub struct Level {
     pub config: IniData,
     pub moredummies: IniData,
@@ -2675,7 +2684,7 @@ pub mod multi_pack_fs {
     use super::{Deserialize, ParsedData, PathBuf, Result, Serialize};
     use crate::packed_vfs::MultiPack;
 
-    #[derive(Serialize, Debug, Deserialize)]
+    #[derive(Serialize, Debug, Deserialize, facet::Facet)]
     pub struct Entry {
         pub path: String,
         pub size: u64,
@@ -2863,7 +2872,7 @@ where
 }
 
 #[binrw]
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, facet::Facet)]
 #[brw(magic = b"TEST")]
 #[bw(import_raw(compute: bool))]
 pub struct Test {
