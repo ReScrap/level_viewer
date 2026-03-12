@@ -8,14 +8,14 @@ use std::{
     sync::Arc,
 };
 
-use binrw::{BinReaderExt, io::BufReader};
-use color_eyre::eyre::{Context, Result, anyhow, bail};
+use binrw::{io::BufReader, BinReaderExt};
+use color_eyre::eyre::{anyhow, bail, Context, Result};
 use fs_err as fs;
 use futures_lite::{AsyncRead, AsyncSeek};
 use glob::Pattern;
 use memmap2::Mmap;
 use serde::Serialize;
-use vfs::{FileSystem, SeekAndWrite, VfsMetadata, error::VfsErrorKind};
+use vfs::{error::VfsErrorKind, FileSystem, SeekAndWrite, VfsMetadata};
 
 use crate::parser::{PackedEntry, PackedHeader, PascalString};
 
@@ -103,6 +103,22 @@ impl MultiPack {
             }
             DirectoryTree::Directory { .. } => Err(VfsErrorKind::NotSupported.into()),
         }
+    }
+
+    pub fn for_each_file(&self, callback: fn(&str, &[u8])) -> Result<()> {
+        for packed in &self.files {
+            for entry in &packed.header.files {
+                let data_start = entry.offset as usize;
+                let data_end = data_start
+                    .checked_add(entry.size as usize)
+                    .ok_or_else(|| anyhow!("Invalid entry range for {}", entry.path))?;
+                if data_end > packed.mm.len() {
+                    bail!("Entry out of bounds: {}", entry.path);
+                }
+                callback(&entry.path, &packed.mm[data_start..data_end]);
+            }
+        }
+        Ok(())
     }
 
     // pub fn add<P: AsRef<Path>>(&mut self, file: &P) -> Result<()> {
@@ -356,11 +372,7 @@ impl PackedTransformer {
         Ok(self)
     }
 
-    pub fn patch(
-        mut self,
-        pattern: &str,
-        func: PatchFunc,
-    ) -> Result<Self> {
+    pub fn patch(mut self, pattern: &str, func: PatchFunc) -> Result<Self> {
         self.ops
             .push(PackedOp::Patch(glob::Pattern::new(pattern)?, func));
         Ok(self)
