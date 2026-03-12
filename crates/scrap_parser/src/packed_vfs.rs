@@ -304,21 +304,25 @@ impl FileSystem for MultiPack {
     }
 }
 
+type RenameFunc = fn(&str) -> String;
+type PatchFunc = fn(&str, &mut Cow<[u8]>) -> Result<()>;
+type AddFunc = fn() -> Vec<u8>;
+
 enum PackedOp {
     Delete(Pattern),
-    Rename(Pattern, fn(&str) -> String),
-    Patch(Pattern, fn(&str, &mut Vec<u8>) -> Result<()>),
-    Add(String, fn() -> Vec<u8>),
+    Rename(Pattern, RenameFunc),
+    Patch(Pattern, PatchFunc),
+    Add(String, AddFunc),
 }
 
 struct PatchStep {
     path: String,
-    func: fn(&str, &mut Vec<u8>) -> Result<()>,
+    func: PatchFunc,
 }
 
 enum PackedDataSource {
     Existing(usize),
-    Added(fn() -> Vec<u8>),
+    Added(AddFunc),
 }
 
 struct ProcessedEntry {
@@ -346,7 +350,7 @@ impl PackedTransformer {
         Ok(self)
     }
 
-    pub fn rename(mut self, pattern: &str, func: fn(&str) -> String) -> Result<Self> {
+    pub fn rename(mut self, pattern: &str, func: RenameFunc) -> Result<Self> {
         self.ops
             .push(PackedOp::Rename(glob::Pattern::new(pattern)?, func));
         Ok(self)
@@ -355,13 +359,13 @@ impl PackedTransformer {
     pub fn patch(
         mut self,
         pattern: &str,
-        func: fn(&str, &mut Vec<u8>) -> Result<()>,
+        func: PatchFunc,
     ) -> Result<Self> {
         self.ops
             .push(PackedOp::Patch(glob::Pattern::new(pattern)?, func));
         Ok(self)
     }
-    pub fn add(mut self, path: &str, func: fn() -> Vec<u8>) -> Result<Self> {
+    pub fn add(mut self, path: &str, func: AddFunc) -> Result<Self> {
         self.ops.push(PackedOp::Add(path.to_owned(), func));
         Ok(self)
     }
@@ -407,7 +411,7 @@ impl PackedTransformer {
             };
 
             for patch in entry.patches {
-                (patch.func)(&patch.path, data.to_mut())
+                (patch.func)(&patch.path, &mut data)
                     .context(format!("Error patching {}", patch.path))?;
             }
 

@@ -65,7 +65,7 @@ oxipng = "10.1.0"
 imagequant = "4.4.1"
 png = "0.18.1"
 zip = { version = "8.1.0", default-features = false }
-image = { version = "0.25.9", default-features = false, features = [
+image = { version = "0.25.10", default-features = false, features = [
   "dds",
   "png",
 ] }

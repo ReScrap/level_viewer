@@ -54,7 +54,8 @@ fn convert_dds_to_png(data: &[u8], quantize: bool, optimize: bool) -> Result<Vec
     let data = Cursor::new(data);
     let mut decoder = dds::Decoder::new(data).unwrap();
     let size = decoder.main_size();
-    let mut data = vec![0_u8; size.pixels() as usize * 4];
+    let bpp = decoder.native_color().bytes_per_pixel() as usize;
+    let mut data = vec![0_u8; size.pixels() as usize * bpp];
     let view = dds::ImageViewMut::new(&mut data, size, dds::ColorFormat::RGBA_U8).unwrap();
     decoder.read_surface(view)?;
     let img = RgbaImage::from_raw(size.width, size.height, data).unwrap();
