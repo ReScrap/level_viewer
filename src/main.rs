@@ -1,7 +1,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque},
     hash::Hash,
-    io::{BufWriter, Cursor, Read, Write},
+    io::{BufWriter, Cursor, Read, Seek as _, SeekFrom, Write},
     ops::{Deref, DerefMut},
     path::{Path, PathBuf},
 };
@@ -54,6 +54,8 @@ use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use clap::Parser;
 use color_eyre::eyre::{Context, Result, anyhow, bail};
 use configparser::ini::Ini;
+use dds::ColorFormat;
+use image::RgbImage;
 use itertools::Itertools;
 use num_traits::Float;
 use petgraph::{Directed, graphmap::GraphMap};
@@ -239,35 +241,35 @@ fn get_packed_files(scrap_path: &Path) -> Result<Vec<PathBuf>> {
     Ok(packed_files)
 }
 
-fn dump_ani(fs: &MultiPackFS, sm3: &str, cm3: &str) -> Result<HashMap<String, AnimTracks>> {
-    let mut track_map: HashMap<String, AnimTracks> = HashMap::new();
-    let ParsedData::Data(Data::SM3(sm3)) = fs.parse_file(sm3)? else {
-        bail!("Failed to parse model!")
-    };
-    let ParsedData::Data(Data::CM3(cm3)) = fs.parse_file(cm3)? else {
-        bail!("Failed to parse animation!")
-    };
-    let Some(ani) = cm3.scene.ani.get() else {
-        bail!("No animation data found in CM3!");
-    };
-    for node in &sm3.scene.nodes {
-        if node.object_index >= 0 {
-            let idx: usize = node.object_index.try_into()?;
-            if let Some(track) =
-                ani.track_map[idx].and_then(|v| ani.get_track(v as usize).ok().flatten())
-            {
-                let name = (*node.name).to_owned();
-                let nam = &ani.tracks[ani.track_map[idx].unwrap() as usize];
-                println!(
-                    "   {}: {:?} ({}+{} frames)",
-                    name, nam.cm3_flags, nam.start_frame, nam.frames
-                );
-                track_map.insert(name, track);
-            }
-        }
-    }
-    return Ok(track_map);
-}
+// fn dump_ani(fs: &MultiPackFS, sm3: &str, cm3: &str) -> Result<HashMap<String, AnimTracks>> {
+//     let mut track_map: HashMap<String, AnimTracks> = HashMap::new();
+//     let ParsedData::Data(Data::SM3(sm3)) = fs.parse_file(sm3)? else {
+//         bail!("Failed to parse model!")
+//     };
+//     let ParsedData::Data(Data::CM3(cm3)) = fs.parse_file(cm3)? else {
+//         bail!("Failed to parse animation!")
+//     };
+//     let Some(ani) = cm3.scene.ani.get() else {
+//         bail!("No animation data found in CM3!");
+//     };
+//     for node in &sm3.scene.nodes {
+//         if node.object_index >= 0 {
+//             let idx: usize = node.object_index.try_into()?;
+//             if let Some(track) =
+//                 ani.track_map[idx].and_then(|v| ani.get_track(v as usize).ok().flatten())
+//             {
+//                 let name = (*node.name).to_owned();
+//                 let nam = &ani.tracks[ani.track_map[idx].unwrap() as usize];
+//                 println!(
+//                     "   {}: {:?} ({}+{} frames)",
+//                     name, nam.cm3_flags, nam.start_frame, nam.frames
+//                 );
+//                 track_map.insert(name, track);
+//             }
+//         }
+//     }
+//     return Ok(track_map);
+// }
 
 fn find_numeric_null_candidates(json: &str, limit: usize) -> Vec<String> {
     fn fmt_path(path: &[String]) -> String {
@@ -374,26 +376,81 @@ fn main() -> Result<()> {
     for file in packed_files {
         let out = out_path.join(file.file_name().unwrap());
         PackedTransformer::new(&file)?
-            .patch("*", |name, buffer| {
-                if [".emi"]
-                    .iter()
-                    .any(|e| name.ends_with(e))
-                {
-                    let mut data: Data = Cursor::new(buffer.as_slice()).read_le()?;
-                    println!("Rewriting {name}");
-                    if let Data::EMI(emi) = &mut data {
-                        emi.materials.iter_mut().for_each(|(_,mat)| {
-                            // dbg!(mat.spec_mult,mat.spec_power);
-                            mat.spec_mult=1.0;
-                            mat.spec_power=1.0;
-                        })
-                    }
-                    buffer.clear();
-                    let mut cur = Cursor::new(buffer);
-                    data.write_le(&mut cur)?;
-                }
+            .patch("**/dtritus_action.cm3",|path,buffer| {
+                let mut cur = Cursor::new(buffer);
+                let Ok(data) = cur.read_le::<Data>() else {
+                    return Ok(());
+                };
+                dbg!(data);
                 Ok(())
             })?
+            .patch("**/*.dds", |path, buffer| {
+                // println!("Processing {name}");
+                if !path.contains("/dtritus/") {
+                    return Ok(());
+                }
+                use image::{RgbaImage,DynamicImage};
+                let buffer = buffer.to_mut();
+                let data = Cursor::new(buffer);
+                let mut decoder = match dds::Decoder::new(data) {
+                    Ok(dec) => dec,
+                    Err(err) => {
+                        println!("{path}: {err}");
+                        return Ok(());
+                    }
+                };
+                let size = decoder.main_size();
+                let bpp = decoder.native_color().bytes_per_pixel() as usize;
+                let mut img_data = vec![0_u8; size.pixels() as usize * bpp];
+                let view = dds::ImageViewMut::new(&mut img_data, size, decoder.native_color()).unwrap();
+                decoder.read_surface(view)?;
+                let mut img = match decoder.native_color() {
+                    ColorFormat::RGB_U8 => {
+                        let img = RgbImage::from_raw(size.width, size.height, img_data).unwrap();
+                        DynamicImage::ImageRgb8(img)
+                    }
+                    ColorFormat::RGBA_U8 => {
+                        let img = RgbaImage::from_raw(size.width, size.height, img_data).unwrap();
+                        DynamicImage::ImageRgba8(img)
+                    }
+                    other => {
+                        println!("{path}: Unsuported color format: {other}");
+                        return Ok(());
+                    }
+                };
+                img=img.huerotate(180);
+                let fmt = decoder.format();
+                let hdr = decoder.header().clone();
+                let col = decoder.native_color();
+                let mut buffer = decoder.into_reader();
+                buffer.get_mut().clear();
+                buffer.seek(SeekFrom::Start(0)).unwrap();
+                let mut enc = dds::Encoder::new(buffer, fmt, &hdr)?;
+                if hdr.mipmap_count().get() > 1 {
+                    enc.mipmaps.generate = true;
+                }
+                let img_out = dds::ImageView::new(img.as_bytes(), size, col).unwrap();
+                enc.write_surface(img_out)?;
+                assert!(enc.is_done());
+                Ok(())
+            })?
+            // .patch("**/*.emi", |name, buffer| {
+            //     let mut data: Data = Cursor::new(buffer.as_slice()).read_le()?;
+            //     println!("Rewriting {name}");
+            //     if let Data::EMI(emi) = &mut data {
+            //         emi.materials.iter_mut().for_each(|(_,mat)| {
+            //             // dbg!(mat.spec_mult,mat.spec_power);
+            //             mat.spec_mult=1.0;
+            //             mat.spec_power=1.0;
+            //             mat.mat_props.attrib.clear();
+            //             mat.mat_props.enable_fog = 0;
+            //         })
+            //     }
+            //     buffer.clear();
+            //     let mut cur = Cursor::new(buffer);
+            //     data.write_le(&mut cur)?;
+            //     Ok(())
+            // })?
             .write(&out)?;
     }
     return Ok(());
@@ -672,7 +729,7 @@ fn main() -> Result<()> {
             Update,
             (
                 keyboard_handler,
-                anim_debug,
+                // anim_debug,
                 tree_overlay,
                 render_amc,
                 export::do_export.run_if(|state: Res<State>| state.export),
@@ -729,129 +786,129 @@ struct AnimState {
 
 // TODO: adapt into method on ANI struct, returns Vec<(Isometry3d, FOV, LinearRGBA, Int, Vis)
 
-fn anim_debug(state: Res<State>, time: Res<Time>, mut gizmos: Gizmos, mut did_run: Local<bool>) {
-    let Some(ParsedData::Data(Data::CM3(cm3))) = &state.data else {
-        return;
-    };
-    let Some(ani) = cm3.scene.ani.get() else {
-        return;
-    };
-    let subframe = time.elapsed_secs() % ani.fps;
-    let current_frame = (ani.first_frame as usize)
-        + ((time.elapsed_secs() * ani.fps) as usize)
-            % ((ani.last_frame - ani.first_frame) as usize);
-    // dbg!(&ani.data.len());
-    // dbg!(&ani.nabk.data.len());
-    let total_size = ani
-        .tracks
-        .iter()
-        .flat_map(|nam| &nam.tracks)
-        .map(|block| block.size)
-        .sum::<usize>();
-    assert_eq!(total_size, ani.data.len());
-    // println!("== DATA ==");
-    let mut buffer = std::io::Cursor::new(&ani.data);
-    for (track_idx, nam) in ani.tracks.iter().enumerate() {
-        // println!("{nam:?}");
-        let mut isometry = Isometry3d::IDENTITY;
-        let mut active = false;
-        let mut color = Oklcha::sequential_dispersed(track_idx as u32);
-        for (block_idx, block) in nam.tracks.iter().enumerate() {
-            let mut data = vec![0u8; block.size];
-            buffer.read_exact(&mut data).unwrap();
-            let mut fh = std::io::Cursor::new(&data);
-            let mut block_start = nam.start_frame;
-            let mut block_frame_count = nam.frames;
-            let mut elem_count = block.size / block.elem_size;
-            if block.stream && block.optimized {
-                elem_count = (block.size - 6) / block.elem_size;
-                let size = fh.read_u16::<LittleEndian>().unwrap();
-                block_start = fh.read_u16::<LittleEndian>().unwrap().into();
-                block_frame_count = fh.read_u16::<LittleEndian>().unwrap().into();
-                assert_eq!(size as usize, block.size);
-            }
-            if !*did_run {
-                /*
-                println!("{block:?}");
-                println!(
-                    "NAM Start Frame: {}, Frames: {}",
-                    nam.data.start_frame, nam.data.frames
-                );
-                println!("Element count: {elem_count}");
-                println!(
-                    "Anim Info: [Size: {block_size}, Start frame: {block_start}, Num frames: {block_frame_count}]",
-                    block_size = block.size
-                );
-                assert!((block_start + block_frame_count) <= nam.data.frames);
-                println!("=======================");
-                */
-            }
-            // if block.stream || block.optimized {
-            //     continue;
-            // }
-            match block.track_type {
-                AniTrackType::Position => {
-                    // let mut pos = Vec::new();
-                    let mut dst = [0f32; 3];
-                    let mut n: usize = nam.start_frame as usize;
-                    while fh.position() != (fh.get_ref().len() as u64) {
-                        fh.read_f32_into::<LittleEndian>(&mut dst).unwrap();
-                        if n == current_frame {
-                            isometry.translation = Vec3::from_array(transform_pos(dst)).into();
-                            active = true;
-                        }
-                        n += 1;
-                    }
-                    // println!("{pos:?}");
-                } // Pos,
-                AniTrackType::Rotation => {
-                    let mut dst = [0f32; 4];
-                    let mut n: usize = nam.start_frame as usize;
-                    while fh.position() != (fh.get_ref().len() as u64) {
-                        fh.read_f32_into::<LittleEndian>(&mut dst).unwrap();
-                        if n == current_frame {
-                            isometry.rotation = Quat::from_array(dst);
-                            active = true;
-                        }
-                        n += 1;
-                    }
-                }
-                AniTrackType::Color => {
-                    let mut dst = [0u8; 4];
-                    let mut n: usize = nam.start_frame as usize;
-                    while fh.position() != (fh.get_ref().len() as u64) {
-                        fh.read_exact(&mut dst).unwrap();
-                        if n == current_frame {
-                            color = LinearRgba::from_u8_array(dst).into();
-                            active = true;
-                        }
-                        n += 1;
-                    }
-                }
-                AniTrackType::Visibility => {
-                    let mut n: usize = nam.start_frame as usize;
-                    while fh.position() != (fh.get_ref().len() as u64) {
-                        let val = fh.read_u8().unwrap();
-                        if n == current_frame {
-                            active = val == 1;
-                        }
-                        n += 1;
-                    }
-                } // Vis,
-                other => {
-                    warn!("Unknown animation block id: {other:?}")
-                }
-            }
-        }
-        if active {
-            gizmos.sphere(isometry, 10.0, color);
-            gizmos.axes(isometry, 10.0);
-        }
-    }
-    assert_eq!(buffer.position(), ani.data.len() as u64);
-    // std::process::exit(0);
-    *did_run = true;
-}
+// fn anim_debug(state: Res<State>, time: Res<Time>, mut gizmos: Gizmos, mut did_run: Local<bool>) {
+//     let Some(ParsedData::Data(Data::CM3(cm3))) = &state.data else {
+//         return;
+//     };
+//     let Some(ani) = cm3.scene.ani.get() else {
+//         return;
+//     };
+//     let subframe = time.elapsed_secs() % ani.fps;
+//     let current_frame = (ani.first_frame as usize)
+//         + ((time.elapsed_secs() * ani.fps) as usize)
+//             % ((ani.last_frame - ani.first_frame) as usize);
+//     // dbg!(&ani.data.len());
+//     // dbg!(&ani.nabk.data.len());
+//     let total_size = ani
+//         .tracks
+//         .iter()
+//         .flat_map(|nam| &nam.tracks)
+//         .map(|block| block.size)
+//         .sum::<usize>();
+//     assert_eq!(total_size, ani.data.len());
+//     // println!("== DATA ==");
+//     let mut buffer = std::io::Cursor::new(&ani.data);
+//     for (track_idx, nam) in ani.tracks.iter().enumerate() {
+//         // println!("{nam:?}");
+//         let mut isometry = Isometry3d::IDENTITY;
+//         let mut active = false;
+//         let mut color = Oklcha::sequential_dispersed(track_idx as u32);
+//         for (block_idx, block) in nam.tracks.iter().enumerate() {
+//             let mut data = vec![0u8; block.size];
+//             buffer.read_exact(&mut data).unwrap();
+//             let mut fh = std::io::Cursor::new(&data);
+//             let mut block_start = nam.start_frame;
+//             let mut block_frame_count = nam.frames;
+//             let mut elem_count = block.size / block.elem_size;
+//             if block.stream && block.optimized {
+//                 elem_count = (block.size - 6) / block.elem_size;
+//                 let size = fh.read_u16::<LittleEndian>().unwrap();
+//                 block_start = fh.read_u16::<LittleEndian>().unwrap().into();
+//                 block_frame_count = fh.read_u16::<LittleEndian>().unwrap().into();
+//                 assert_eq!(size as usize, block.size);
+//             }
+//             if !*did_run {
+//                 /*
+//                 println!("{block:?}");
+//                 println!(
+//                     "NAM Start Frame: {}, Frames: {}",
+//                     nam.data.start_frame, nam.data.frames
+//                 );
+//                 println!("Element count: {elem_count}");
+//                 println!(
+//                     "Anim Info: [Size: {block_size}, Start frame: {block_start}, Num frames: {block_frame_count}]",
+//                     block_size = block.size
+//                 );
+//                 assert!((block_start + block_frame_count) <= nam.data.frames);
+//                 println!("=======================");
+//                 */
+//             }
+//             // if block.stream || block.optimized {
+//             //     continue;
+//             // }
+//             match block.track_type {
+//                 AniTrackType::Position => {
+//                     // let mut pos = Vec::new();
+//                     let mut dst = [0f32; 3];
+//                     let mut n: usize = nam.start_frame as usize;
+//                     while fh.position() != (fh.get_ref().len() as u64) {
+//                         fh.read_f32_into::<LittleEndian>(&mut dst).unwrap();
+//                         if n == current_frame {
+//                             isometry.translation = Vec3::from_array(transform_pos(dst)).into();
+//                             active = true;
+//                         }
+//                         n += 1;
+//                     }
+//                     // println!("{pos:?}");
+//                 } // Pos,
+//                 AniTrackType::Rotation => {
+//                     let mut dst = [0f32; 4];
+//                     let mut n: usize = nam.start_frame as usize;
+//                     while fh.position() != (fh.get_ref().len() as u64) {
+//                         fh.read_f32_into::<LittleEndian>(&mut dst).unwrap();
+//                         if n == current_frame {
+//                             isometry.rotation = Quat::from_array(dst);
+//                             active = true;
+//                         }
+//                         n += 1;
+//                     }
+//                 }
+//                 AniTrackType::Color => {
+//                     let mut dst = [0u8; 4];
+//                     let mut n: usize = nam.start_frame as usize;
+//                     while fh.position() != (fh.get_ref().len() as u64) {
+//                         fh.read_exact(&mut dst).unwrap();
+//                         if n == current_frame {
+//                             color = LinearRgba::from_u8_array(dst).into();
+//                             active = true;
+//                         }
+//                         n += 1;
+//                     }
+//                 }
+//                 AniTrackType::Visibility => {
+//                     let mut n: usize = nam.start_frame as usize;
+//                     while fh.position() != (fh.get_ref().len() as u64) {
+//                         let val = fh.read_u8().unwrap();
+//                         if n == current_frame {
+//                             active = val == 1;
+//                         }
+//                         n += 1;
+//                     }
+//                 } // Vis,
+//                 other => {
+//                     warn!("Unknown animation block id: {other:?}")
+//                 }
+//             }
+//         }
+//         if active {
+//             gizmos.sphere(isometry, 10.0, color);
+//             gizmos.axes(isometry, 10.0);
+//         }
+//     }
+//     assert_eq!(buffer.position(), ani.data.len() as u64);
+//     // std::process::exit(0);
+//     *did_run = true;
+// }
 
 fn animate_camera(
     mut cam_transform: Query<&mut Transform, With<Camera>>,
