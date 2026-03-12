@@ -63,7 +63,6 @@ use pid::Pid;
 use regex::Regex;
 use rhexdump::{rhexdump, rhexdumps};
 use scrap_parser::{
-    packed_vfs::PackedTransformer,
     parser::{
         self, AniTrackType, AnimTracks, CM3, Data, Level, LightType, NodeData, ParsedData, SM3,
         Vertex, multi_pack_fs::MultiPackFS,
@@ -372,87 +371,86 @@ fn main() -> Result<()> {
         return Ok(());
     }
     let packed_files = get_packed_files(&cli.scrapland.join("backup"))?;
+    let transform_fs = MultiPackFS::new(&packed_files)?;
     let out_path = PathBuf::from("packed_out");
-    for file in packed_files {
-        let out = out_path.join(file.file_name().unwrap());
-        PackedTransformer::new(&file)?
-            .patch("**/dtritus_action.cm3",|path,buffer| {
-                let mut cur = Cursor::new(buffer);
-                let Ok(data) = cur.read_le::<Data>() else {
-                    return Ok(());
-                };
-                dbg!(data);
-                Ok(())
-            })?
-            .patch("**/*.dds", |path, buffer| {
-                // println!("Processing {name}");
-                if !path.contains("/dtritus/") {
+    transform_fs
+        .transform()?
+        .patch("**/dtritus_action.cm3",|path,buffer| {
+            let mut cur = Cursor::new(buffer);
+            let Ok(data) = cur.read_le::<Data>() else {
+                return Ok(());
+            };
+            dbg!(data);
+            Ok(())
+        })?
+        .patch("**/*.dds", |path, buffer| {
+            // println!("Processing {name}");
+            if !path.contains("/dtritus/") {
+                return Ok(());
+            }
+            use image::{RgbaImage,DynamicImage};
+            let buffer = buffer.to_mut();
+            let data = Cursor::new(buffer);
+            let mut decoder = match dds::Decoder::new(data) {
+                Ok(dec) => dec,
+                Err(err) => {
+                    println!("{path}: {err}");
                     return Ok(());
                 }
-                use image::{RgbaImage,DynamicImage};
-                let buffer = buffer.to_mut();
-                let data = Cursor::new(buffer);
-                let mut decoder = match dds::Decoder::new(data) {
-                    Ok(dec) => dec,
-                    Err(err) => {
-                        println!("{path}: {err}");
-                        return Ok(());
-                    }
-                };
-                let size = decoder.main_size();
-                let bpp = decoder.native_color().bytes_per_pixel() as usize;
-                let mut img_data = vec![0_u8; size.pixels() as usize * bpp];
-                let view = dds::ImageViewMut::new(&mut img_data, size, decoder.native_color()).unwrap();
-                decoder.read_surface(view)?;
-                let mut img = match decoder.native_color() {
-                    ColorFormat::RGB_U8 => {
-                        let img = RgbImage::from_raw(size.width, size.height, img_data).unwrap();
-                        DynamicImage::ImageRgb8(img)
-                    }
-                    ColorFormat::RGBA_U8 => {
-                        let img = RgbaImage::from_raw(size.width, size.height, img_data).unwrap();
-                        DynamicImage::ImageRgba8(img)
-                    }
-                    other => {
-                        println!("{path}: Unsuported color format: {other}");
-                        return Ok(());
-                    }
-                };
-                img=img.huerotate(180);
-                let fmt = decoder.format();
-                let hdr = decoder.header().clone();
-                let col = decoder.native_color();
-                let mut buffer = decoder.into_reader();
-                buffer.get_mut().clear();
-                buffer.seek(SeekFrom::Start(0)).unwrap();
-                let mut enc = dds::Encoder::new(buffer, fmt, &hdr)?;
-                if hdr.mipmap_count().get() > 1 {
-                    enc.mipmaps.generate = true;
+            };
+            let size = decoder.main_size();
+            let bpp = decoder.native_color().bytes_per_pixel() as usize;
+            let mut img_data = vec![0_u8; size.pixels() as usize * bpp];
+            let view = dds::ImageViewMut::new(&mut img_data, size, decoder.native_color()).unwrap();
+            decoder.read_surface(view)?;
+            let mut img = match decoder.native_color() {
+                ColorFormat::RGB_U8 => {
+                    let img = RgbImage::from_raw(size.width, size.height, img_data).unwrap();
+                    DynamicImage::ImageRgb8(img)
                 }
-                let img_out = dds::ImageView::new(img.as_bytes(), size, col).unwrap();
-                enc.write_surface(img_out)?;
-                assert!(enc.is_done());
-                Ok(())
-            })?
-            // .patch("**/*.emi", |name, buffer| {
-            //     let mut data: Data = Cursor::new(buffer.as_slice()).read_le()?;
-            //     println!("Rewriting {name}");
-            //     if let Data::EMI(emi) = &mut data {
-            //         emi.materials.iter_mut().for_each(|(_,mat)| {
-            //             // dbg!(mat.spec_mult,mat.spec_power);
-            //             mat.spec_mult=1.0;
-            //             mat.spec_power=1.0;
-            //             mat.mat_props.attrib.clear();
-            //             mat.mat_props.enable_fog = 0;
-            //         })
-            //     }
-            //     buffer.clear();
-            //     let mut cur = Cursor::new(buffer);
-            //     data.write_le(&mut cur)?;
-            //     Ok(())
-            // })?
-            .write(&out)?;
-    }
+                ColorFormat::RGBA_U8 => {
+                    let img = RgbaImage::from_raw(size.width, size.height, img_data).unwrap();
+                    DynamicImage::ImageRgba8(img)
+                }
+                other => {
+                    println!("{path}: Unsuported color format: {other}");
+                    return Ok(());
+                }
+            };
+            img=img.huerotate(180);
+            let fmt = decoder.format();
+            let hdr = decoder.header().clone();
+            let col = decoder.native_color();
+            let mut buffer = decoder.into_reader();
+            buffer.get_mut().clear();
+            buffer.seek(SeekFrom::Start(0)).unwrap();
+            let mut enc = dds::Encoder::new(buffer, fmt, &hdr)?;
+            if hdr.mipmap_count().get() > 1 {
+                enc.mipmaps.generate = true;
+            }
+            let img_out = dds::ImageView::new(img.as_bytes(), size, col).unwrap();
+            enc.write_surface(img_out)?;
+            assert!(enc.is_done());
+            Ok(())
+        })?
+        // .patch("**/*.emi", |name, buffer| {
+        //     let mut data: Data = Cursor::new(buffer.as_slice()).read_le()?;
+        //     println!("Rewriting {name}");
+        //     if let Data::EMI(emi) = &mut data {
+        //         emi.materials.iter_mut().for_each(|(_,mat)| {
+        //             // dbg!(mat.spec_mult,mat.spec_power);
+        //             mat.spec_mult=1.0;
+        //             mat.spec_power=1.0;
+        //             mat.mat_props.attrib.clear();
+        //             mat.mat_props.enable_fog = 0;
+        //         })
+        //     }
+        //     buffer.clear();
+        //     let mut cur = Cursor::new(buffer);
+        //     data.write_le(&mut cur)?;
+        //     Ok(())
+        // })?
+        .write(&out_path)?;
     return Ok(());
     let fs = MultiPackFS::new(&packed_files)?;
     // for sm3_entry in &entries {
