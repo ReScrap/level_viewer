@@ -2682,7 +2682,7 @@ pub mod multi_pack_fs {
     use vfs::{SeekAndRead, VfsPath};
 
     use super::{Deserialize, ParsedData, PathBuf, Result, Serialize};
-    use crate::packed_vfs::MultiPack;
+    use crate::packed_vfs::{MultiPack, MultiPackTransformer};
 
     #[derive(Serialize, Debug, Deserialize, facet::Facet)]
     pub struct Entry {
@@ -2695,14 +2695,21 @@ pub mod multi_pack_fs {
     pub struct MultiPackFS {
         pub fs: VfsPath,
         current: Vec<String>,
+        packed_files: Vec<PathBuf>,
     }
 
     impl MultiPackFS {
         pub fn new<P: AsRef<Path>>(files: &[P]) -> Result<Self> {
+            let packed_files = files.iter().map(|file| file.as_ref().to_owned()).collect();
             MultiPack::load_all(&files).map(|fs| MultiPackFS {
                 fs: fs.into(),
                 current: vec![],
+                packed_files,
             })
+        }
+
+        pub fn transform(&self) -> Result<MultiPackTransformer> {
+            MultiPackTransformer::new(&self.packed_files)
         }
 
         pub fn exists(&self, path: &str) -> Result<bool> {

@@ -347,17 +347,18 @@ struct ProcessedEntry {
     patches: Vec<PatchStep>,
 }
 
-pub struct PackedTransformer {
-    packed: PackedFile,
+pub struct MultiPackTransformer {
+    packs: Vec<PackedFile>,
     ops: Vec<PackedOp>,
 }
 
-impl PackedTransformer {
-    pub fn new<P: AsRef<Path>>(path: P) -> Result<Self> {
-        Ok(Self {
-            packed: PackedFile::load(path)?,
-            ops: vec![],
-        })
+impl MultiPackTransformer {
+    pub fn new<P: AsRef<Path>>(paths: &[P]) -> Result<Self> {
+        let mut packs = Vec::with_capacity(paths.len());
+        for path in paths {
+            packs.push(PackedFile::load(path)?);
+        }
+        Ok(Self { packs, ops: vec![] })
     }
 
     pub fn delete(mut self, pattern: &str) -> Result<Self> {
@@ -377,17 +378,38 @@ impl PackedTransformer {
             .push(PackedOp::Patch(glob::Pattern::new(pattern)?, func));
         Ok(self)
     }
+
     pub fn add(mut self, path: &str, func: AddFunc) -> Result<Self> {
         self.ops.push(PackedOp::Add(path.to_owned(), func));
         Ok(self)
     }
 
-    pub fn write<P: AsRef<Path>>(self, output_path: P) -> Result<()> {
+    pub fn write<P: AsRef<Path>>(self, output_dir: P) -> Result<()> {
+        fs::create_dir_all(output_dir.as_ref()).with_context(|| {
+            format!(
+                "Failed to create output directory {}",
+                output_dir.as_ref().display()
+            )
+        })?;
+
+        for packed in &self.packs {
+            let file_name = packed
+                ._path
+                .file_name()
+                .ok_or_else(|| anyhow!("Invalid packed file path {}", packed._path.display()))?;
+            let output_path = output_dir.as_ref().join(file_name);
+            Self::write_pack(packed, &self.ops, &output_path)?;
+        }
+
+        Ok(())
+    }
+
+    fn write_pack(packed: &PackedFile, ops: &[PackedOp], output_path: &Path) -> Result<()> {
         use binrw::BinWrite;
 
-        let mut output_file = File::create(output_path.as_ref())
-            .with_context(|| format!("Failed to create {}", output_path.as_ref().display()))?;
-        let processed_entries = self.process_ops()?;
+        let mut output_file = File::create(output_path)
+            .with_context(|| format!("Failed to create {}", output_path.display()))?;
+        let processed_entries = Self::process_ops(packed, ops)?;
 
         let header_size = PackedHeader {
             files: processed_entries
@@ -414,10 +436,10 @@ impl PackedTransformer {
             let mut data: Cow<[u8]> = match entry.source {
                 PackedDataSource::Existing(index) => {
                     let original =
-                        self.packed.header.files.get(index).ok_or_else(|| {
+                        packed.header.files.get(index).ok_or_else(|| {
                             anyhow!("Packed source index out of bounds: {}", index)
                         })?;
-                    Cow::Borrowed(self.get_entry_data(original)?)
+                    Cow::Borrowed(Self::get_entry_data(packed, original)?)
                 }
                 PackedDataSource::Added(generator) => Cow::Owned(generator()),
             };
@@ -453,9 +475,8 @@ impl PackedTransformer {
         Ok(())
     }
 
-    fn process_ops(&self) -> Result<Vec<ProcessedEntry>> {
-        let mut result: Vec<ProcessedEntry> = self
-            .packed
+    fn process_ops(packed: &PackedFile, ops: &[PackedOp]) -> Result<Vec<ProcessedEntry>> {
+        let mut result: Vec<ProcessedEntry> = packed
             .header
             .files
             .iter()
@@ -467,7 +488,7 @@ impl PackedTransformer {
             })
             .collect();
 
-        for op in &self.ops {
+        for op in ops {
             match op {
                 PackedOp::Delete(pattern) => {
                     result.retain(|entry| !pattern.matches(&entry.path));
@@ -510,14 +531,14 @@ impl PackedTransformer {
         Ok(result)
     }
 
-    fn get_entry_data<'s>(&'s self, entry: &PackedEntry) -> Result<&'s [u8]> {
+    fn get_entry_data<'s>(packed: &'s PackedFile, entry: &PackedEntry) -> Result<&'s [u8]> {
         let data_start = entry.offset as usize;
         let data_end = data_start
             .checked_add(entry.size as usize)
             .ok_or_else(|| anyhow!("Invalid entry range for {}", entry.path))?;
-        if data_end > self.packed.mm.len() {
+        if data_end > packed.mm.len() {
             bail!("Entry out of bounds: {}", entry.path);
         }
-        Ok(&self.packed.mm[data_start..data_end])
+        Ok(&packed.mm[data_start..data_end])
     }
 }
