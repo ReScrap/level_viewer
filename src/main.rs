@@ -208,7 +208,7 @@ struct Cli {
 
 fn run_export(fs: &MultiPackFS, path: &str, output_path: &PathBuf) -> Result<()> {
     let vfs_path = fs
-        .fs
+        .root
         .root()
         .join(path)
         .map_err(|e| color_eyre::eyre::anyhow!("Invalid path: {}", e))?;
@@ -371,21 +371,23 @@ fn main() -> Result<()> {
         return Ok(());
     }
     let packed_files = get_packed_files(&cli.scrapland.join("backup"))?;
-    let transform_fs = MultiPackFS::new(&packed_files)?;
+    let fs = MultiPackFS::new(&packed_files)?;
     let out_path = PathBuf::from("packed_out");
-    transform_fs
+    fs
         .transform()?
-        .patch("**/dtritus_action.cm3",|path,buffer| {
-            let mut cur = Cursor::new(buffer);
-            let Ok(data) = cur.read_le::<Data>() else {
-                return Ok(());
-            };
-            dbg!(data);
-            Ok(())
-        })?
+        // .patch("**/dtritus_action.cm3",|path,buffer| {
+        //     let mut cur = Cursor::new(buffer);
+        //     let Ok(data) = cur.read_le::<Data>() else {
+        //         return Ok(());
+        //     };
+        //     dbg!(data);
+        //     Ok(())
+        // })?
         .patch("**/*.dds", |path, buffer| {
             // println!("Processing {name}");
-            if !path.contains("/dtritus/") {
+            let is_betty_ship = path.contains("sbetty")||path.contains("mbetty");
+            let is_diffuse = path.contains("-d");
+            if !(is_betty_ship&&is_diffuse) {
                 return Ok(());
             }
             use image::{RgbaImage,DynamicImage};
@@ -417,7 +419,7 @@ fn main() -> Result<()> {
                     return Ok(());
                 }
             };
-            img=img.huerotate(180);
+            img=DynamicImage::ImageRgba8(img.grayscale().to_rgba8()).brighten(-64);
             let fmt = decoder.format();
             let hdr = decoder.header().clone();
             let col = decoder.native_color();
