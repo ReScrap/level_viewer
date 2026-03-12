@@ -2675,7 +2675,7 @@ pub enum ParsedData {
 pub mod multi_pack_fs {
     use std::{
         collections::{BTreeMap, HashMap},
-        path::Path,
+        path::Path, sync::Arc,
     };
 
     use color_eyre::eyre::bail;
@@ -2693,31 +2693,32 @@ pub mod multi_pack_fs {
 
     #[derive(Debug, Clone)]
     pub struct MultiPackFS {
-        pub fs: VfsPath,
+        pub root: VfsPath,
+        pack: MultiPack,
         current: Vec<String>,
-        packed_files: Vec<PathBuf>,
     }
 
     impl MultiPackFS {
         pub fn new<P: AsRef<Path>>(files: &[P]) -> Result<Self> {
-            let packed_files = files.iter().map(|file| file.as_ref().to_owned()).collect();
-            MultiPack::load_all(&files).map(|fs| MultiPackFS {
-                fs: fs.into(),
+            let pack = MultiPack::load_all(files)?;
+            Ok(MultiPackFS {
+                root: pack.clone().into(),
+                pack,
                 current: vec![],
-                packed_files,
             })
         }
 
         pub fn transform(&self) -> Result<MultiPackTransformer> {
-            MultiPackTransformer::new(&self.packed_files)
+            // self.fs.
+            MultiPackTransformer::new(self.pack.clone())
         }
 
         pub fn exists(&self, path: &str) -> Result<bool> {
-            Ok(self.fs.root().join(path).and_then(|p| p.metadata()).is_ok())
+            Ok(self.root.root().join(path).and_then(|p| p.metadata()).is_ok())
         }
 
         pub fn is_level(&self, path: Option<String>) -> Result<bool> {
-            let mut root = self.fs.root();
+            let mut root = self.root.root();
             if let Some(path) = path {
                 root = root.join(path)?
             } else {
@@ -2743,7 +2744,7 @@ pub mod multi_pack_fs {
 
         pub fn ls(&self) -> Result<Vec<Entry>> {
             let mut ret = vec![];
-            let mut root = self.fs.root();
+            let mut root = self.root.root();
             for entry in &self.current {
                 root = root.join(entry)?;
             }
@@ -2766,7 +2767,7 @@ pub mod multi_pack_fs {
 
         pub fn entries(&self) -> Result<Vec<Entry>> {
             let mut entries = vec![];
-            for res in self.fs.walk_dir()? {
+            for res in self.root.walk_dir()? {
                 let res = res?;
                 let path = res.as_str().to_owned();
                 let meta = res.metadata()?;
@@ -2783,7 +2784,7 @@ pub mod multi_pack_fs {
             if self.current.is_empty() {
                 return Ok("/".to_owned());
             }
-            let mut root = self.fs.root();
+            let mut root = self.root.root();
             for entry in &self.current {
                 root = root.join(entry)?
             }
@@ -2796,7 +2797,7 @@ pub mod multi_pack_fs {
                 self.current.pop();
                 return Ok(());
             }
-            let mut root = self.fs.root();
+            let mut root = self.root.root();
             for entry in &self.current {
                 root = root.join(entry)?;
             }
@@ -2809,7 +2810,7 @@ pub mod multi_pack_fs {
         }
 
         pub fn dependencies(&self, path: &str) -> Result<BTreeMap<String, String>> {
-            let mut root = self.fs.root();
+            let mut root = self.root.root();
             for entry in &self.current {
                 root = root.join(entry)?;
             }
@@ -2832,7 +2833,7 @@ pub mod multi_pack_fs {
         }
 
         pub fn open_file(&self, path: &str) -> Result<Box<dyn SeekAndRead>> {
-            let mut root = self.fs.root();
+            let mut root = self.root.root();
             for entry in &self.current {
                 root = root.join(entry)?
             }
@@ -2845,7 +2846,7 @@ pub mod multi_pack_fs {
         }
 
         pub fn parse_file(&self, path: &str) -> Result<ParsedData> {
-            let mut root = self.fs.root();
+            let mut root = self.root.root();
             for entry in &self.current {
                 root = root.join(entry)?;
             }

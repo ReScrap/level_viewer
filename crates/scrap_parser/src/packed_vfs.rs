@@ -46,9 +46,9 @@ impl PackedFile {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug,Clone)]
 pub struct MultiPack {
-    files: Vec<PackedFile>,
+    files: Arc<[PackedFile]>,
     pub tree: DirectoryTree,
 }
 
@@ -83,7 +83,7 @@ impl MultiPack {
         }
         Ok(Self {
             tree,
-            files: packed_files,
+            files: packed_files.into(),
         })
     }
 
@@ -106,7 +106,7 @@ impl MultiPack {
     }
 
     pub fn for_each_file(&self, callback: fn(&str, &[u8])) -> Result<()> {
-        for packed in &self.files {
+        for packed in self.files.iter() {
             for entry in &packed.header.files {
                 let data_start = entry.offset as usize;
                 let data_end = data_start
@@ -348,17 +348,13 @@ struct ProcessedEntry {
 }
 
 pub struct MultiPackTransformer {
-    packs: Vec<PackedFile>,
+    packs: Arc<[PackedFile]>,
     ops: Vec<PackedOp>,
 }
 
 impl MultiPackTransformer {
-    pub fn new<P: AsRef<Path>>(paths: &[P]) -> Result<Self> {
-        let mut packs = Vec::with_capacity(paths.len());
-        for path in paths {
-            packs.push(PackedFile::load(path)?);
-        }
-        Ok(Self { packs, ops: vec![] })
+    pub fn new(packs: MultiPack) -> Result<Self> {
+        Ok(Self { packs: packs.files, ops: vec![] })
     }
 
     pub fn delete(mut self, pattern: &str) -> Result<Self> {
@@ -384,7 +380,7 @@ impl MultiPackTransformer {
         Ok(self)
     }
 
-    pub fn write<P: AsRef<Path>>(self, output_dir: P) -> Result<()> {
+    pub fn write<P: AsRef<Path>>(self, output_dir: P, full: bool) -> Result<()> {
         fs::create_dir_all(output_dir.as_ref()).with_context(|| {
             format!(
                 "Failed to create output directory {}",
@@ -392,19 +388,19 @@ impl MultiPackTransformer {
             )
         })?;
 
-        for packed in &self.packs {
+        for packed in self.packs.iter() {
             let file_name = packed
                 ._path
                 .file_name()
                 .ok_or_else(|| anyhow!("Invalid packed file path {}", packed._path.display()))?;
             let output_path = output_dir.as_ref().join(file_name);
-            Self::write_pack(packed, &self.ops, &output_path)?;
+            Self::write_pack(packed, &self.ops, &output_path, full)?;
         }
 
         Ok(())
     }
 
-    fn write_pack(packed: &PackedFile, ops: &[PackedOp], output_path: &Path) -> Result<()> {
+    fn write_pack(packed: &PackedFile, ops: &[PackedOp], output_path: &Path, full: bool) -> Result<()> {
         use binrw::BinWrite;
 
         let mut output_file = File::create(output_path)

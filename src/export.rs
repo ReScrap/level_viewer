@@ -122,7 +122,7 @@ fn compress_rgba_image(img: &DynamicImage, quantize: bool, optimize: bool) -> Re
 }
 
 fn export_worker(
-    fs: Arc<MultiPackFS>,
+    fs: MultiPackFS,
     rx: Receiver<(String, String, bool)>, // (src_fs_path, dst_zip_path, is_lightmap)
     tx: Sender<(String, Vec<u8>)>,        // (dst_zip_path, png_data)
 ) -> Result<()> {
@@ -159,7 +159,6 @@ fn export_worker(
 
 pub fn export_level(fs: &MultiPackFS, lvl: &Level, output_path: &Path) -> Result<()> {
     info!("Exporting level to {}", output_path.display());
-    let fs = Arc::new(fs.clone());
     let ncpus = std::thread::available_parallelism()?.get();
     info!("Compressing textures with {ncpus} workers");
     let (tx, rx, handles) = {
