@@ -372,7 +372,6 @@ fn main() -> Result<()> {
     }
     let packed_files = get_packed_files(&cli.scrapland.join("backup"))?;
     let fs = MultiPackFS::new(&packed_files)?;
-    let out_path = PathBuf::from("packed_out");
     fs
         .transform()?
         // .patch("**/dtritus_action.cm3",|path,buffer| {
@@ -452,7 +451,7 @@ fn main() -> Result<()> {
         //     data.write_le(&mut cur)?;
         //     Ok(())
         // })?
-        .write(&out_path)?;
+        .write("packed_out")?;
     return Ok(());
     let fs = MultiPackFS::new(&packed_files)?;
     // for sm3_entry in &entries {
