@@ -8,14 +8,14 @@ use std::{
     sync::Arc,
 };
 
-use binrw::{io::BufReader, BinReaderExt};
-use color_eyre::eyre::{anyhow, bail, Context, Result};
+use binrw::{BinReaderExt, io::BufReader};
+use color_eyre::eyre::{Context, Result, anyhow, bail};
 use fs_err as fs;
 use futures_lite::{AsyncRead, AsyncSeek};
 use glob::Pattern;
 use memmap2::Mmap;
 use serde::Serialize;
-use vfs::{error::VfsErrorKind, FileSystem, SeekAndWrite, VfsMetadata};
+use vfs::{FileSystem, SeekAndWrite, VfsMetadata, error::VfsErrorKind};
 
 use crate::parser::{PackedEntry, PackedHeader, PascalString};
 
@@ -46,7 +46,7 @@ impl PackedFile {
     }
 }
 
-#[derive(Debug,Clone)]
+#[derive(Debug, Clone)]
 pub struct MultiPack {
     files: Arc<[PackedFile]>,
     pub tree: DirectoryTree,
@@ -337,7 +337,10 @@ struct PatchStep {
 }
 
 enum PackedDataSource {
-    Existing(usize),
+    Existing {
+        pack_index: usize,
+        entry_index: usize,
+    },
     Added(AddFunc),
 }
 
@@ -345,6 +348,7 @@ struct ProcessedEntry {
     path: String,
     source: PackedDataSource,
     patches: Vec<PatchStep>,
+    changed: bool,
 }
 
 pub struct MultiPackTransformer {
@@ -354,7 +358,10 @@ pub struct MultiPackTransformer {
 
 impl MultiPackTransformer {
     pub fn new(packs: MultiPack) -> Result<Self> {
-        Ok(Self { packs: packs.files, ops: vec![] })
+        Ok(Self {
+            packs: packs.files,
+            ops: vec![],
+        })
     }
 
     pub fn delete(mut self, pattern: &str) -> Result<Self> {
@@ -380,7 +387,7 @@ impl MultiPackTransformer {
         Ok(self)
     }
 
-    pub fn write<P: AsRef<Path>>(self, output_dir: P, full: bool) -> Result<()> {
+    pub fn write<P: AsRef<Path>>(self, output_dir: P, mod_filename: Option<&str>) -> Result<()> {
         fs::create_dir_all(output_dir.as_ref()).with_context(|| {
             format!(
                 "Failed to create output directory {}",
@@ -388,24 +395,43 @@ impl MultiPackTransformer {
             )
         })?;
 
-        for packed in self.packs.iter() {
-            let file_name = packed
-                ._path
-                .file_name()
-                .ok_or_else(|| anyhow!("Invalid packed file path {}", packed._path.display()))?;
-            let output_path = output_dir.as_ref().join(file_name);
-            Self::write_pack(packed, &self.ops, &output_path, full)?;
+        let transformed = self
+            .packs
+            .iter()
+            .enumerate()
+            .map(|(pack_index, packed)| Self::process_ops(packed, pack_index, &self.ops))
+            .collect::<Result<Vec<_>>>()?;
+
+        if let Some(mod_filename) = mod_filename {
+            if mod_filename.trim().is_empty() {
+                bail!("Mod filename cannot be empty");
+            }
+
+            let output_path = output_dir.as_ref().join(mod_filename);
+            let entries = Self::collect_changed_entries(transformed);
+            Self::write_pack(&self.packs, entries, &output_path)?;
+        } else {
+            for (packed, entries) in self.packs.iter().zip(transformed.into_iter()) {
+                let file_name = packed._path.file_name().ok_or_else(|| {
+                    anyhow!("Invalid packed file path {}", packed._path.display())
+                })?;
+                let output_path = output_dir.as_ref().join(file_name);
+                Self::write_pack(&self.packs, entries, &output_path)?;
+            }
         }
 
         Ok(())
     }
 
-    fn write_pack(packed: &PackedFile, ops: &[PackedOp], output_path: &Path, full: bool) -> Result<()> {
+    fn write_pack(
+        packs: &[PackedFile],
+        processed_entries: Vec<ProcessedEntry>,
+        output_path: &Path,
+    ) -> Result<()> {
         use binrw::BinWrite;
 
         let mut output_file = File::create(output_path)
             .with_context(|| format!("Failed to create {}", output_path.display()))?;
-        let processed_entries = Self::process_ops(packed, ops)?;
 
         let header_size = PackedHeader {
             files: processed_entries
@@ -430,11 +456,16 @@ impl MultiPackTransformer {
                 .map_err(|_| anyhow!("Packed offset overflow for {}", entry.path))?;
 
             let mut data: Cow<[u8]> = match entry.source {
-                PackedDataSource::Existing(index) => {
-                    let original =
-                        packed.header.files.get(index).ok_or_else(|| {
-                            anyhow!("Packed source index out of bounds: {}", index)
-                        })?;
+                PackedDataSource::Existing {
+                    pack_index,
+                    entry_index,
+                } => {
+                    let packed = packs.get(pack_index).ok_or_else(|| {
+                        anyhow!("Packed source pack index out of bounds: {pack_index}")
+                    })?;
+                    let original = packed.header.files.get(entry_index).ok_or_else(|| {
+                        anyhow!("Packed source index out of bounds: {entry_index}")
+                    })?;
                     Cow::Borrowed(Self::get_entry_data(packed, original)?)
                 }
                 PackedDataSource::Added(generator) => Cow::Owned(generator()),
@@ -471,7 +502,11 @@ impl MultiPackTransformer {
         Ok(())
     }
 
-    fn process_ops(packed: &PackedFile, ops: &[PackedOp]) -> Result<Vec<ProcessedEntry>> {
+    fn process_ops(
+        packed: &PackedFile,
+        pack_index: usize,
+        ops: &[PackedOp],
+    ) -> Result<Vec<ProcessedEntry>> {
         let mut result: Vec<ProcessedEntry> = packed
             .header
             .files
@@ -479,8 +514,12 @@ impl MultiPackTransformer {
             .enumerate()
             .map(|(index, entry)| ProcessedEntry {
                 path: entry.path.clone(),
-                source: PackedDataSource::Existing(index),
+                source: PackedDataSource::Existing {
+                    pack_index,
+                    entry_index: index,
+                },
                 patches: Vec::new(),
+                changed: false,
             })
             .collect();
 
@@ -492,7 +531,11 @@ impl MultiPackTransformer {
                 PackedOp::Rename(pattern, func) => {
                     for entry in &mut result {
                         if pattern.matches(&entry.path) {
-                            entry.path = func(&entry.path);
+                            let new_path = func(&entry.path);
+                            if new_path != entry.path {
+                                entry.changed = true;
+                                entry.path = new_path;
+                            }
                         }
                     }
                 }
@@ -503,6 +546,7 @@ impl MultiPackTransformer {
                                 path: entry.path.clone(),
                                 func: *func,
                             });
+                            entry.changed = true;
                         }
                     }
                 }
@@ -511,6 +555,7 @@ impl MultiPackTransformer {
                         path: path.clone(),
                         source: PackedDataSource::Added(*generator),
                         patches: Vec::new(),
+                        changed: true,
                     });
                 }
             }
@@ -525,6 +570,26 @@ impl MultiPackTransformer {
         }
 
         Ok(result)
+    }
+
+    fn collect_changed_entries(packs: Vec<Vec<ProcessedEntry>>) -> Vec<ProcessedEntry> {
+        let mut changed_entries = Vec::new();
+        let mut seen = HashSet::new();
+
+        for entries in packs {
+            for entry in entries {
+                if !entry.changed {
+                    continue;
+                }
+
+                let key = entry.path.to_ascii_lowercase();
+                if seen.insert(key) {
+                    changed_entries.push(entry);
+                }
+            }
+        }
+
+        changed_entries
     }
 
     fn get_entry_data<'s>(packed: &'s PackedFile, entry: &PackedEntry) -> Result<&'s [u8]> {

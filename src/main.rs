@@ -451,7 +451,7 @@ fn main() -> Result<()> {
         //     data.write_le(&mut cur)?;
         //     Ok(())
         // })?
-        .write("packed_out")?;
+        .write("packed_out", None)?;
     return Ok(());
     let fs = MultiPackFS::new(&packed_files)?;
     // for sm3_entry in &entries {
