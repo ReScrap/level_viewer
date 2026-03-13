@@ -2708,7 +2708,7 @@ pub mod multi_pack_fs {
             })
         }
 
-        pub fn transform(&self) -> Result<MultiPackTransformer> {
+        pub fn transform(&self) -> MultiPackTransformer {
             // self.fs.
             MultiPackTransformer::new(self.pack.clone())
         }

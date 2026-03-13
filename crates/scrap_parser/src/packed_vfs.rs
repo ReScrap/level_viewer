@@ -8,14 +8,14 @@ use std::{
     sync::Arc,
 };
 
-use binrw::{io::BufReader, BinReaderExt};
-use color_eyre::eyre::{anyhow, bail, Context, Result};
+use binrw::{BinReaderExt, io::BufReader};
+use color_eyre::eyre::{Context, Result, anyhow, bail};
 use fs_err as fs;
 use futures_lite::{AsyncRead, AsyncSeek};
 use glob::Pattern;
 use memmap2::Mmap;
 use serde::Serialize;
-use vfs::{error::VfsErrorKind, FileSystem, SeekAndWrite, VfsMetadata};
+use vfs::{FileSystem, SeekAndWrite, VfsMetadata, error::VfsErrorKind};
 
 use crate::parser::{PackedEntry, PackedHeader, PascalString};
 
@@ -46,7 +46,7 @@ impl PackedFile {
     }
 }
 
-#[derive(Debug,Clone)]
+#[derive(Debug, Clone)]
 pub struct MultiPack {
     files: Arc<[PackedFile]>,
     pub tree: DirectoryTree,
@@ -215,7 +215,7 @@ pub struct FileHandle {
 }
 
 impl FileHandle {
-    pub fn get<'a>(&'a self) -> &'a [u8] {
+    pub fn get(&self) -> &[u8] {
         let b = self.cursor.get_ref();
         &b[self.data.clone()]
     }
@@ -347,14 +347,33 @@ struct ProcessedEntry {
     patches: Vec<PatchStep>,
 }
 
+#[derive(Clone, Copy)]
+enum ModSource {
+    Existing {
+        pack_index: usize,
+        file_index: usize,
+    },
+    Added(AddFunc),
+}
+
+#[derive(Clone)]
+struct ModEntry {
+    new_path: String,
+    source: ModSource,
+    patches: Vec<PatchFunc>,
+}
+
 pub struct MultiPackTransformer {
     packs: Arc<[PackedFile]>,
     ops: Vec<PackedOp>,
 }
 
 impl MultiPackTransformer {
-    pub fn new(packs: MultiPack) -> Result<Self> {
-        Ok(Self { packs: packs.files, ops: vec![] })
+    pub fn new(packs: MultiPack) -> Self {
+        Self {
+            packs: packs.files,
+            ops: vec![],
+        }
     }
 
     pub fn delete(mut self, pattern: &str) -> Result<Self> {
@@ -380,7 +399,7 @@ impl MultiPackTransformer {
         Ok(self)
     }
 
-    pub fn write<P: AsRef<Path>>(self, output_dir: P, full: bool) -> Result<()> {
+    pub fn write<P: AsRef<Path>>(self, output_dir: P) -> Result<()> {
         fs::create_dir_all(output_dir.as_ref()).with_context(|| {
             format!(
                 "Failed to create output directory {}",
@@ -394,13 +413,205 @@ impl MultiPackTransformer {
                 .file_name()
                 .ok_or_else(|| anyhow!("Invalid packed file path {}", packed._path.display()))?;
             let output_path = output_dir.as_ref().join(file_name);
-            Self::write_pack(packed, &self.ops, &output_path, full)?;
+            Self::write_pack(packed, &self.ops, &output_path)?;
         }
 
         Ok(())
     }
 
-    fn write_pack(packed: &PackedFile, ops: &[PackedOp], output_path: &Path, full: bool) -> Result<()> {
+    pub fn write_mod<P: AsRef<Path>>(self, output_path: P) -> Result<()> {
+        use binrw::BinWrite;
+
+        let changed = Self::collect_changed_entries(&self.packs, &self.ops)?;
+
+        if changed.is_empty() {
+            return Ok(());
+        }
+
+        let mut final_entries: Vec<(ModEntry, usize)> = Vec::with_capacity(changed.len());
+
+        for entry in &changed {
+            let mut data: Cow<[u8]> = match &entry.source {
+                ModSource::Existing {
+                    pack_index,
+                    file_index,
+                } => {
+                    let packed = self
+                        .packs
+                        .get(*pack_index)
+                        .ok_or_else(|| anyhow!("Pack index out of bounds"))?;
+                    let file = packed
+                        .header
+                        .files
+                        .get(*file_index)
+                        .ok_or_else(|| anyhow!("File index out of bounds"))?;
+                    Cow::Borrowed(Self::get_entry_data(packed, file)?)
+                }
+                ModSource::Added(generator) => Cow::Owned(generator()),
+            };
+
+            let mut should_include = false;
+
+            for patch_func in &entry.patches {
+                let data_prev = data.clone();
+                (patch_func)(&entry.new_path, &mut data)
+                    .context(format!("Error patching {}", entry.new_path))?;
+                should_include |= data_prev != data;
+                if should_include {
+                    println!(
+                        "Adding {} to mod archive",
+                        entry.new_path
+                    );
+                }
+            }
+
+            should_include |= matches!(&data, Cow::Owned(_));
+            if should_include {
+                final_entries.push((entry.clone(), data.len()));
+            }
+        }
+
+        if final_entries.is_empty() {
+            return Ok(());
+        }
+
+        let header_size = PackedHeader {
+            files: final_entries
+                .iter()
+                .map(|(entry, _)| PackedEntry {
+                    path: entry.new_path.clone(),
+                    size: 0,
+                    offset: 0,
+                })
+                .collect(),
+        }
+        .size();
+
+        let mut output_file = File::create(output_path.as_ref())
+            .with_context(|| format!("Failed to create {}", output_path.as_ref().display()))?;
+
+        output_file.seek(SeekFrom::Start(header_size as u64))?;
+
+        let mut data_offset = header_size;
+        let mut final_header_entries = Vec::with_capacity(final_entries.len());
+
+        for (entry, data_len) in final_entries {
+            let offset: u32 = data_offset
+                .try_into()
+                .map_err(|_| anyhow!("Offset overflow for {}", entry.new_path))?;
+
+            let mut data: Cow<[u8]> = match entry.source {
+                ModSource::Existing {
+                    pack_index,
+                    file_index,
+                } => {
+                    let packed = self
+                        .packs
+                        .get(pack_index)
+                        .ok_or_else(|| anyhow!("Pack index out of bounds"))?;
+                    let file = packed
+                        .header
+                        .files
+                        .get(file_index)
+                        .ok_or_else(|| anyhow!("File index out of bounds"))?;
+                    Cow::Borrowed(Self::get_entry_data(packed, file)?)
+                }
+                ModSource::Added(generator) => Cow::Owned(generator()),
+            };
+
+            for patch_func in &entry.patches {
+                (patch_func)(&entry.new_path, &mut data)
+                    .context(format!("Error patching {}", entry.new_path))?;
+            }
+
+            output_file.write_all(data.as_ref())?;
+            data_offset = data_offset
+                .checked_add(data_len)
+                .ok_or_else(|| anyhow!("Packed file too large"))?;
+            final_header_entries.push(PackedEntry {
+                path: entry.new_path,
+                size: data_len as u32,
+                offset,
+            });
+        }
+
+        output_file.seek(SeekFrom::Start(0))?;
+        PackedHeader {
+            files: final_header_entries,
+        }
+        .write_le(&mut output_file)?;
+
+        Ok(())
+    }
+
+    fn collect_changed_entries(packs: &[PackedFile], ops: &[PackedOp]) -> Result<Vec<ModEntry>> {
+        let mut result = Vec::new();
+
+        for (pack_index, packed) in packs.iter().enumerate() {
+            for (file_index, file_entry) in packed.header.files.iter().enumerate() {
+                let mut current_path = file_entry.path.clone();
+                let mut is_changed = false;
+                let mut patches = Vec::new();
+
+                for op in ops {
+                    match op {
+                        PackedOp::Delete(pattern) => {
+                            if pattern.matches(&current_path) {
+                                is_changed = true;
+                                break;
+                            }
+                        }
+                        PackedOp::Rename(pattern, func) => {
+                            if pattern.matches(&current_path) {
+                                current_path = func(&current_path);
+                                is_changed = true;
+                            }
+                        }
+                        PackedOp::Patch(pattern, func) => {
+                            if pattern.matches(&current_path) {
+                                patches.push(*func);
+                                is_changed = true;
+                            }
+                        }
+                        PackedOp::Add(_, _) => {}
+                    }
+                }
+
+                if is_changed {
+                    result.push(ModEntry {
+                        new_path: current_path,
+                        source: ModSource::Existing {
+                            pack_index,
+                            file_index,
+                        },
+                        patches,
+                    });
+                }
+            }
+        }
+
+        for op in ops {
+            if let PackedOp::Add(path, generator) = op {
+                result.push(ModEntry {
+                    new_path: path.clone(),
+                    source: ModSource::Added(*generator),
+                    patches: Vec::new(),
+                });
+            }
+        }
+
+        let mut seen = HashSet::with_capacity(result.len());
+        for entry in &result {
+            let key = entry.new_path.to_ascii_lowercase();
+            if !seen.insert(key) {
+                bail!("Duplicate path in mod: {}", entry.new_path);
+            }
+        }
+
+        Ok(result)
+    }
+
+    fn write_pack(packed: &PackedFile, ops: &[PackedOp], output_path: &Path) -> Result<()> {
         use binrw::BinWrite;
 
         let mut output_file = File::create(output_path)

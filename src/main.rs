@@ -373,7 +373,7 @@ fn main() -> Result<()> {
     let packed_files = get_packed_files(&cli.scrapland.join("backup"))?;
     let fs = MultiPackFS::new(&packed_files)?;
     fs
-        .transform()?
+        .transform()
         // .patch("**/dtritus_action.cm3",|path,buffer| {
         //     let mut cur = Cursor::new(buffer);
         //     let Ok(data) = cur.read_le::<Data>() else {
@@ -384,9 +384,8 @@ fn main() -> Result<()> {
         // })?
         .patch("**/*.dds", |path, buffer| {
             // println!("Processing {name}");
-            let is_betty_ship = path.contains("sbetty")||path.contains("mbetty");
-            let is_diffuse = path.contains("-d");
-            if !(is_betty_ship&&is_diffuse) {
+            let is_lmap = path.contains("-d")||path.contains("-a");
+            if !is_lmap {
                 return Ok(());
             }
             use image::{RgbaImage,DynamicImage};
@@ -418,7 +417,7 @@ fn main() -> Result<()> {
                     return Ok(());
                 }
             };
-            img=DynamicImage::ImageRgba8(img.grayscale().to_rgba8()).brighten(-64);
+            img=img.huerotate(180);
             let fmt = decoder.format();
             let hdr = decoder.header().clone();
             let col = decoder.native_color();
@@ -451,7 +450,7 @@ fn main() -> Result<()> {
         //     data.write_le(&mut cur)?;
         //     Ok(())
         // })?
-        .write("packed_out")?;
+        .write_mod("packed_out/mod.packed")?;
     return Ok(());
     let fs = MultiPackFS::new(&packed_files)?;
     // for sm3_entry in &entries {
