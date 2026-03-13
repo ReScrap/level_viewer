@@ -62,11 +62,9 @@ use petgraph::{Directed, graphmap::GraphMap};
 use pid::Pid;
 use regex::Regex;
 use rhexdump::{rhexdump, rhexdumps};
-use scrap_parser::{
-    parser::{
-        self, AniTrackType, AnimTracks, CM3, Data, Level, LightType, NodeData, ParsedData, SM3,
-        Vertex, multi_pack_fs::MultiPackFS,
-    },
+use scrap_parser::parser::{
+    self, AniTrackType, AnimTracks, CM3, Data, Level, LightType, NodeData, ParsedData, SM3, Vertex,
+    multi_pack_fs::MultiPackFS,
 };
 use serde::{Deserialize, Serialize};
 
@@ -372,8 +370,7 @@ fn main() -> Result<()> {
     }
     let packed_files = get_packed_files(&cli.scrapland.join("backup"))?;
     let fs = MultiPackFS::new(&packed_files)?;
-    fs
-        .transform()?
+    fs.transform()?
         // .patch("**/dtritus_action.cm3",|path,buffer| {
         //     let mut cur = Cursor::new(buffer);
         //     let Ok(data) = cur.read_le::<Data>() else {
@@ -384,12 +381,12 @@ fn main() -> Result<()> {
         // })?
         .patch("**/*.dds", |path, buffer| {
             // println!("Processing {name}");
-            let is_betty_ship = path.contains("sbetty")||path.contains("mbetty");
+            let is_betty_ship = path.contains("sbetty") || path.contains("mbetty");
             let is_diffuse = path.contains("-d");
-            if !(is_betty_ship&&is_diffuse) {
+            if !(is_betty_ship && is_diffuse) {
                 return Ok(());
             }
-            use image::{RgbaImage,DynamicImage};
+            use image::{DynamicImage, RgbaImage};
             let buffer = buffer.to_mut();
             let data = Cursor::new(buffer);
             let mut decoder = match dds::Decoder::new(data) {
@@ -418,7 +415,7 @@ fn main() -> Result<()> {
                     return Ok(());
                 }
             };
-            img=DynamicImage::ImageRgba8(img.grayscale().to_rgba8()).brighten(-64);
+            img = DynamicImage::ImageRgba8(img.grayscale().to_rgba8()).brighten(-64);
             let fmt = decoder.format();
             let hdr = decoder.header().clone();
             let col = decoder.native_color();

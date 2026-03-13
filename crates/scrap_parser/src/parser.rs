@@ -863,7 +863,16 @@ pub enum Pos {
 
 #[bitsize(32)]
 #[derive(
-    DebugBits, Serialize, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, TryFromBits, Deserialize,
+    DebugBits,
+    Serialize,
+    Copy,
+    Clone,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    TryFromBits,
+    Deserialize,
     facet::Facet,
 )]
 pub struct FVF {
@@ -1278,7 +1287,18 @@ pub struct PORT {
     height: f32,
 }
 
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Sequence, Serialize, ToPrimitive, Deserialize, facet::Facet)]
+#[derive(
+    Debug,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Sequence,
+    Serialize,
+    ToPrimitive,
+    Deserialize,
+    facet::Facet,
+)]
 #[repr(u8)]
 pub enum NodeFlags {
     ROOT,
@@ -1479,7 +1499,16 @@ pub enum CmpFunc {
 }
 
 #[derive(
-    Debug, PartialEq, Eq, PartialOrd, Ord, Sequence, Serialize, ToPrimitive, Clone, Deserialize,
+    Debug,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Sequence,
+    Serialize,
+    ToPrimitive,
+    Clone,
+    Deserialize,
     facet::Facet,
 )]
 #[repr(u8)]
@@ -1836,64 +1865,97 @@ fn write_block_payload(block: &BlockInfo, nam: &NAM, tracks: &AnimTracks) -> Bin
         Ok(writer.into_inner())
     }
 
-    let payload = match block.track_type {
-        AniTrackType::Position => write_values(tracks.pos.as_deref().ok_or_else(|| {
-            binrw::Error::AssertFail {
-                pos: 0,
-                message: "missing ANI position track payload".into(),
+    let payload =
+        match block.track_type {
+            AniTrackType::Position => {
+                write_values(
+                    tracks
+                        .pos
+                        .as_deref()
+                        .ok_or_else(|| binrw::Error::AssertFail {
+                            pos: 0,
+                            message: "missing ANI position track payload".into(),
+                        })?,
+                )?
             }
-        })?)?,
-        AniTrackType::Rotation => write_values(tracks.rot.as_deref().ok_or_else(|| {
-            binrw::Error::AssertFail {
-                pos: 0,
-                message: "missing ANI rotation track payload".into(),
+            AniTrackType::Rotation => {
+                write_values(
+                    tracks
+                        .rot
+                        .as_deref()
+                        .ok_or_else(|| binrw::Error::AssertFail {
+                            pos: 0,
+                            message: "missing ANI rotation track payload".into(),
+                        })?,
+                )?
             }
-        })?)?,
-        AniTrackType::FOV => write_values(tracks.fov.as_deref().ok_or_else(|| {
-            binrw::Error::AssertFail {
-                pos: 0,
-                message: "missing ANI FOV track payload".into(),
+            AniTrackType::FOV => {
+                write_values(
+                    tracks
+                        .fov
+                        .as_deref()
+                        .ok_or_else(|| binrw::Error::AssertFail {
+                            pos: 0,
+                            message: "missing ANI FOV track payload".into(),
+                        })?,
+                )?
             }
-        })?)?,
-        AniTrackType::Color => write_values(tracks.color.as_deref().ok_or_else(|| {
-            binrw::Error::AssertFail {
-                pos: 0,
-                message: "missing ANI color track payload".into(),
+            AniTrackType::Color => {
+                write_values(
+                    tracks
+                        .color
+                        .as_deref()
+                        .ok_or_else(|| binrw::Error::AssertFail {
+                            pos: 0,
+                            message: "missing ANI color track payload".into(),
+                        })?,
+                )?
             }
-        })?)?,
-        AniTrackType::Intensity => write_values(tracks.intensity.as_deref().ok_or_else(|| {
-            binrw::Error::AssertFail {
-                pos: 0,
-                message: "missing ANI intensity track payload".into(),
+            AniTrackType::Intensity => {
+                write_values(tracks.intensity.as_deref().ok_or_else(|| {
+                    binrw::Error::AssertFail {
+                        pos: 0,
+                        message: "missing ANI intensity track payload".into(),
+                    }
+                })?)?
             }
-        })?)?,
-        AniTrackType::Visibility => {
-            let values = tracks.visibility.as_deref().ok_or_else(|| binrw::Error::AssertFail {
-                pos: 0,
-                message: "missing ANI visibility track payload".into(),
-            })?;
-            let packed: Vec<u8> = values.iter().map(|&v| u8::from(v)).collect();
-            write_values(&packed)?
-        }
-        AniTrackType::EVA => Vec::new(),
-    };
+            AniTrackType::Visibility => {
+                let values =
+                    tracks
+                        .visibility
+                        .as_deref()
+                        .ok_or_else(|| binrw::Error::AssertFail {
+                            pos: 0,
+                            message: "missing ANI visibility track payload".into(),
+                        })?;
+                let packed: Vec<u8> = values.iter().map(|&v| u8::from(v)).collect();
+                write_values(&packed)?
+            }
+            AniTrackType::EVA => Vec::new(),
+        };
 
     let mut out = if block.optimized && block.stream {
-        let start_frame: u16 = nam
-            .start_frame
+        let start_frame: u16 =
+            nam.start_frame
+                .try_into()
+                .map_err(|_| binrw::Error::AssertFail {
+                    pos: 0,
+                    message: "ANI stream start_frame does not fit in u16".into(),
+                })?;
+        let num_frames: u16 = nam
+            .frames
             .try_into()
             .map_err(|_| binrw::Error::AssertFail {
                 pos: 0,
-                message: "ANI stream start_frame does not fit in u16".into(),
+                message: "ANI stream frame count does not fit in u16".into(),
             })?;
-        let num_frames: u16 = nam.frames.try_into().map_err(|_| binrw::Error::AssertFail {
-            pos: 0,
-            message: "ANI stream frame count does not fit in u16".into(),
-        })?;
-        let size: u16 = block.size.try_into().map_err(|_| binrw::Error::AssertFail {
-            pos: 0,
-            message: "ANI stream block size does not fit in u16".into(),
-        })?;
+        let size: u16 = block
+            .size
+            .try_into()
+            .map_err(|_| binrw::Error::AssertFail {
+                pos: 0,
+                message: "ANI stream block size does not fit in u16".into(),
+            })?;
         let mut writer = Cursor::new(Vec::new());
         AniStreamHeader {
             size,
@@ -2149,7 +2211,10 @@ impl ANI {
         let Some(index) = u8::try_from(index).ok() else {
             return Ok(None);
         };
-        Ok(self.tracks.get(&index).map(|(_, track_data)| track_data.clone()))
+        Ok(self
+            .tracks
+            .get(&index)
+            .map(|(_, track_data)| track_data.clone()))
     }
 }
 
@@ -2675,7 +2740,8 @@ pub enum ParsedData {
 pub mod multi_pack_fs {
     use std::{
         collections::{BTreeMap, HashMap},
-        path::Path, sync::Arc,
+        path::Path,
+        sync::Arc,
     };
 
     use color_eyre::eyre::bail;
@@ -2714,7 +2780,12 @@ pub mod multi_pack_fs {
         }
 
         pub fn exists(&self, path: &str) -> Result<bool> {
-            Ok(self.root.root().join(path).and_then(|p| p.metadata()).is_ok())
+            Ok(self
+                .root
+                .root()
+                .join(path)
+                .and_then(|p| p.metadata())
+                .is_ok())
         }
 
         pub fn is_level(&self, path: Option<String>) -> Result<bool> {
