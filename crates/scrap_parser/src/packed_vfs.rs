@@ -8,14 +8,14 @@ use std::{
     sync::Arc,
 };
 
-use binrw::{BinReaderExt, io::BufReader};
-use color_eyre::eyre::{Context, Result, anyhow, bail};
+use binrw::{io::BufReader, BinReaderExt};
+use color_eyre::eyre::{anyhow, bail, Context, Result};
 use fs_err as fs;
 use futures_lite::{AsyncRead, AsyncSeek};
 use glob::Pattern;
 use memmap2::Mmap;
 use serde::Serialize;
-use vfs::{FileSystem, SeekAndWrite, VfsMetadata, error::VfsErrorKind};
+use vfs::{error::VfsErrorKind, FileSystem, SeekAndWrite, VfsMetadata};
 
 use crate::parser::{PackedEntry, PackedHeader, PascalString};
 
@@ -422,6 +422,8 @@ impl MultiPackTransformer {
     pub fn write_mod<P: AsRef<Path>>(self, output_path: P) -> Result<()> {
         use binrw::BinWrite;
 
+        const MAX_PACKED_SIZE: u32 = 0x7fffffff;
+
         let changed = Self::collect_changed_entries(&self.packs, &self.ops)?;
 
         if changed.is_empty() {
@@ -457,12 +459,6 @@ impl MultiPackTransformer {
                 (patch_func)(&entry.new_path, &mut data)
                     .context(format!("Error patching {}", entry.new_path))?;
                 should_include |= data_prev != data;
-                if should_include {
-                    println!(
-                        "Adding {} to mod archive",
-                        entry.new_path
-                    );
-                }
             }
 
             should_include |= matches!(&data, Cow::Owned(_));
@@ -475,71 +471,157 @@ impl MultiPackTransformer {
             return Ok(());
         }
 
-        let header_size = PackedHeader {
-            files: final_entries
-                .iter()
-                .map(|(entry, _)| PackedEntry {
+        let output_dir = output_path.as_ref().parent().unwrap_or(Path::new("."));
+        let output_stem = output_path
+            .as_ref()
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("mod");
+        let output_ext = output_path
+            .as_ref()
+            .extension()
+            .and_then(|s| s.to_str())
+            .unwrap_or("packed");
+
+        let mut split_index = 0;
+        let mut current_entries: Vec<(ModEntry, usize)> = Vec::new();
+        let mut current_data_size = 0usize;
+        let mut current_header_size = 0usize;
+
+        fn write_split(
+            output_dir: &Path,
+            output_stem: &str,
+            output_ext: &str,
+            split_index: usize,
+            entries: &[(ModEntry, usize)],
+            packs: &[PackedFile],
+        ) -> Result<()> {
+            use binrw::BinWrite;
+
+            let filename = if split_index == 0 {
+                format!("{}.{}", output_stem, output_ext)
+            } else {
+                format!("{}.{:03}.{}", output_stem, split_index, output_ext)
+            };
+            let output_path = output_dir.join(filename);
+            println!("Writing {} entries to {}", entries.len(), output_path.display());
+            let header_size = PackedHeader {
+                files: entries
+                    .iter()
+                    .map(|(entry, _)| PackedEntry {
+                        path: entry.new_path.clone(),
+                        size: 0,
+                        offset: 0,
+                    })
+                    .collect(),
+            }
+            .size();
+
+            let mut output_file = File::create(&output_path)
+                .with_context(|| format!("Failed to create {}", output_path.display()))?;
+
+            output_file.seek(SeekFrom::Start(header_size as u64))?;
+
+            let mut data_offset = header_size;
+            let mut final_header_entries = Vec::with_capacity(entries.len());
+
+            for (entry, data_len) in entries {
+                let offset: u32 = data_offset
+                    .try_into()
+                    .map_err(|_| anyhow!("Offset overflow for {}", entry.new_path))?;
+
+                let mut data: Cow<[u8]> = match entry.source {
+                    ModSource::Existing {
+                        pack_index,
+                        file_index,
+                    } => {
+                        let packed = packs
+                            .get(pack_index)
+                            .ok_or_else(|| anyhow!("Pack index out of bounds"))?;
+                        let file = packed
+                            .header
+                            .files
+                            .get(file_index)
+                            .ok_or_else(|| anyhow!("File index out of bounds"))?;
+                        Cow::Borrowed(MultiPackTransformer::get_entry_data(packed, file)?)
+                    }
+                    ModSource::Added(generator) => Cow::Owned(generator()),
+                };
+
+                for patch_func in &entry.patches {
+                    (patch_func)(&entry.new_path, &mut data)
+                        .context(format!("Error patching {}", entry.new_path))?;
+                }
+
+                output_file.write_all(data.as_ref())?;
+                data_offset = data_offset
+                    .checked_add(*data_len)
+                    .ok_or_else(|| anyhow!("Packed file too large"))?;
+                final_header_entries.push(PackedEntry {
+                    path: entry.new_path.clone(),
+                    size: *data_len as u32,
+                    offset,
+                });
+            }
+
+            output_file.seek(SeekFrom::Start(0))?;
+            PackedHeader {
+                files: final_header_entries,
+            }
+            .write_le(&mut output_file)?;
+
+            Ok(())
+        }
+
+        for (entry, data_len) in final_entries {
+            let entry_header_size = PackedHeader {
+                files: vec![PackedEntry {
                     path: entry.new_path.clone(),
                     size: 0,
                     offset: 0,
-                })
-                .collect(),
-        }
-        .size();
+                }],
+            }
+            .size();
 
-        let mut output_file = File::create(output_path.as_ref())
-            .with_context(|| format!("Failed to create {}", output_path.as_ref().display()))?;
+            let would_exceed = (current_data_size as u32)
+                .checked_add(data_len as u32)
+                .map(|s| s > MAX_PACKED_SIZE)
+                .unwrap_or(true)
+                || current_header_size
+                    .checked_add(entry_header_size)
+                    .map(|s| s as u32 > MAX_PACKED_SIZE)
+                    .unwrap_or(true);
 
-        output_file.seek(SeekFrom::Start(header_size as u64))?;
-
-        let mut data_offset = header_size;
-        let mut final_header_entries = Vec::with_capacity(final_entries.len());
-
-        for (entry, data_len) in final_entries {
-            let offset: u32 = data_offset
-                .try_into()
-                .map_err(|_| anyhow!("Offset overflow for {}", entry.new_path))?;
-
-            let mut data: Cow<[u8]> = match entry.source {
-                ModSource::Existing {
-                    pack_index,
-                    file_index,
-                } => {
-                    let packed = self
-                        .packs
-                        .get(pack_index)
-                        .ok_or_else(|| anyhow!("Pack index out of bounds"))?;
-                    let file = packed
-                        .header
-                        .files
-                        .get(file_index)
-                        .ok_or_else(|| anyhow!("File index out of bounds"))?;
-                    Cow::Borrowed(Self::get_entry_data(packed, file)?)
-                }
-                ModSource::Added(generator) => Cow::Owned(generator()),
-            };
-
-            for patch_func in &entry.patches {
-                (patch_func)(&entry.new_path, &mut data)
-                    .context(format!("Error patching {}", entry.new_path))?;
+            if would_exceed && !current_entries.is_empty() {
+                write_split(
+                    output_dir,
+                    output_stem,
+                    output_ext,
+                    split_index,
+                    &current_entries,
+                    &self.packs,
+                )?;
+                split_index += 1;
+                current_entries.clear();
+                current_data_size = 0;
+                current_header_size = 0;
             }
 
-            output_file.write_all(data.as_ref())?;
-            data_offset = data_offset
-                .checked_add(data_len)
-                .ok_or_else(|| anyhow!("Packed file too large"))?;
-            final_header_entries.push(PackedEntry {
-                path: entry.new_path,
-                size: data_len as u32,
-                offset,
-            });
+            current_entries.push((entry, data_len));
+            current_data_size += data_len;
+            current_header_size += entry_header_size;
         }
 
-        output_file.seek(SeekFrom::Start(0))?;
-        PackedHeader {
-            files: final_header_entries,
+        if !current_entries.is_empty() {
+            write_split(
+                output_dir,
+                output_stem,
+                output_ext,
+                split_index,
+                &current_entries,
+                &self.packs,
+            )?;
         }
-        .write_le(&mut output_file)?;
 
         Ok(())
     }

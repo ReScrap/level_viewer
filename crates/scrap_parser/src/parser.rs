@@ -123,6 +123,9 @@ where
     pub fn get(&self) -> Option<&T> {
         self.value.as_ref()
     }
+    pub fn get_mut(&mut self) -> Option<&mut T> {
+        self.value.as_mut()
+    }
 }
 
 impl<T> Default for Optional<T>
