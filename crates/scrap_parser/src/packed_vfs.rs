@@ -8,14 +8,14 @@ use std::{
     sync::Arc,
 };
 
-use binrw::{io::BufReader, BinReaderExt};
-use color_eyre::eyre::{anyhow, bail, Context, Result};
+use binrw::{BinReaderExt, io::BufReader};
+use color_eyre::eyre::{Context, Result, anyhow, bail};
 use fs_err as fs;
 use futures_lite::{AsyncRead, AsyncSeek};
 use glob::Pattern;
 use memmap2::Mmap;
 use serde::Serialize;
-use vfs::{error::VfsErrorKind, FileSystem, SeekAndWrite, VfsMetadata};
+use vfs::{FileSystem, SeekAndWrite, VfsMetadata, error::VfsErrorKind};
 
 use crate::parser::{PackedEntry, PackedHeader, PascalString};
 
@@ -504,7 +504,11 @@ impl MultiPackTransformer {
                 format!("{}.{:03}.{}", output_stem, split_index, output_ext)
             };
             let output_path = output_dir.join(filename);
-            println!("Writing {} entries to {}", entries.len(), output_path.display());
+            println!(
+                "Writing {} entries to {}",
+                entries.len(),
+                output_path.display()
+            );
             let header_size = PackedHeader {
                 files: entries
                     .iter()

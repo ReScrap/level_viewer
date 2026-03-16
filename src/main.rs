@@ -60,13 +60,15 @@ use itertools::Itertools;
 use num_traits::Float;
 use petgraph::{Directed, graphmap::GraphMap};
 use pid::Pid;
+use rand::{
+    SeedableRng,
+    seq::{IndexedRandom, SliceRandom},
+};
 use regex::Regex;
 use rhexdump::{rhexdump, rhexdumps};
-use scrap_parser::{
-    parser::{
-        self, AniTrackType, AnimTracks, CM3, Data, Level, LightType, NodeData, ParsedData, SM3,
-        Vertex, multi_pack_fs::MultiPackFS,
-    },
+use scrap_parser::parser::{
+    self, AniTrackType, AnimTracks, CM3, Data, Level, LightType, NodeData, ParsedData, SM3, Vertex,
+    multi_pack_fs::MultiPackFS,
 };
 use serde::{Deserialize, Serialize};
 
@@ -345,6 +347,16 @@ fn find_numeric_null_candidates(json: &str, limit: usize) -> Vec<String> {
     out
 }
 
+fn shufflicate<T: Clone>(data: &Vec<T>) -> Vec<T> {
+    let mut ret = Vec::with_capacity(data.len());
+    let mut rng = rand::rngs::Xoshiro256PlusPlus::from_seed([0; 32]);
+    for i in 0..data.len() {
+        let data: Vec<_> = data.iter().skip(i).take(8).cloned().collect();
+        ret.extend(data.choose(&mut rng).cloned().into_iter());
+    }
+    return ret;
+}
+
 fn main() -> Result<()> {
     color_eyre::install()?;
 
@@ -372,60 +384,43 @@ fn main() -> Result<()> {
     }
     let packed_files = get_packed_files(&cli.scrapland.join("backup"))?;
     let fs = MultiPackFS::new(&packed_files)?;
-    fs.for_each_file(|path,buffer| -> Result<()> {
-        use facet_diff::{FacetDiff, format_diff_compact};
-        if ![".cm3"].iter().any(|e| path.ends_with(e)) {
-            return Ok(())
-        };
-        println!("parsing {path}");
-        let data: Data = Cursor::new(buffer).read_le()?;
-        let mut out = Cursor::new(Vec::new());
-        data.write_le(&mut out)?;
-        out.seek(SeekFrom::Start(0))?;
-        let data_2: Data = out.read_le()?;
-        let diff = &data.diff(&data_2);
-        if !diff.is_equal() {
-            let diff = format_diff_compact(diff);
-            println!("{diff}");
-        };
-        Ok(())
-    })?;
-    // fs
-    //     .transform()
-    //     .patch("**/*.cm3",|path,buffer| {
-    //         let mut cur = Cursor::new(buffer);
-    //         let Ok(Data::CM3(mut data)) = cur.read_le::<Data>() else {
-    //             return Ok(());
-    //         };
-    //         let Some(ani) = data.scene.ani.get_mut() else {
-    //             return Ok(())
-    //         };
-    //         for (_,(_,track)) in ani.tracks.iter_mut() {
-    //             // if let Some(t) = track.pos.as_mut() {
-    //             //     t.reverse();
-    //             // }
-    //             // if let Some(t) = track.rot.as_mut() {
-    //             //     t.reverse();
-    //             // }
-    //             // if let Some(t) = track.fov.as_mut() {
-    //             //     t.reverse();
-    //             // }
-    //             // if let Some(t) = track.visibility.as_mut() {
-    //             //     t.reverse();
-    //             // }
-    //             // if let Some(t) = track.color.as_mut() {
-    //             //     t.reverse();
-    //             // }
-    //             // if let Some(t) = track.intensity.as_mut() {
-    //             //     t.reverse();
-    //             // }
-    //         }
-    //         let buffer = cur.into_inner().to_mut();
-    //         buffer.clear();
-    //         let mut cur = Cursor::new(buffer);
-    //         Data::CM3(data).write_le(&mut cur)?;
-    //         Ok(())
-    //     })?
+    fs.transform()
+        .patch("**/*.cm3", |path, buffer| {
+            let mut cur = Cursor::new(buffer);
+            let Ok(Data::CM3(mut data)) = cur.read_le::<Data>() else {
+                return Ok(());
+            };
+            let Some(ani) = data.scene.ani.get_mut() else {
+                return Ok(());
+            };
+            for (_, (_, track)) in ani.tracks.iter_mut() {
+                if let Some(t) = track.pos.as_mut() {
+                    t.reverse();
+                }
+                if let Some(t) = track.rot.as_mut() {
+                    t.reverse();
+                }
+                if let Some(t) = track.fov.as_mut() {
+                    t.reverse();
+                }
+                if let Some(t) = track.visibility.as_mut() {
+                    t.reverse();
+                }
+                if let Some(t) = track.color.as_mut() {
+                    t.reverse();
+                }
+                if let Some(t) = track.intensity.as_mut() {
+                    t.reverse();
+                }
+            }
+            let buffer = cur.into_inner().to_mut();
+            buffer.clear();
+            let mut cur = Cursor::new(buffer);
+            Data::CM3(data).write_le(&mut cur)?;
+            Ok(())
+        })?
+        .write_mod("packed_out/mod.packed")?;
+
     //     //     // println!("Processing {name}");
     //     //     let is_lmap = path.contains("lmap")||path.contains("-d")||path.contains("-a");
     //     //     let is_sky = path.contains("skies") && ["back","front","left","right","top","bottom"].iter().any(|k| path.contains(k));
@@ -494,7 +489,6 @@ fn main() -> Result<()> {
     //     //     data.write_le(&mut cur)?;
     //     //     Ok(())
     //     // })?
-    //     .write_mod("packed_out/mod.packed")?;
     return Ok(());
     let fs = MultiPackFS::new(&packed_files)?;
     // for sm3_entry in &entries {

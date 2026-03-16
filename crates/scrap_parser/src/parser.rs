@@ -1945,7 +1945,7 @@ fn write_block_payload(block: &BlockInfo, nam: &NAM, tracks: &AnimTracks) -> Bin
                         message: "ANI stream start_frame does not fit in u16".into(),
                     })?;
             let num_frames: u16 = nam
-                .frames
+                .num_frames
                 .try_into()
                 .map_err(|_| binrw::Error::AssertFail {
                     pos: 0,
@@ -2169,7 +2169,7 @@ mod ani_stream_roundtrip_tests {
 
         let nam = NAM {
             start_frame: 777,
-            frames: 999,
+            num_frames: 999,
             cm3_flags: [AniTrackType::Position].into_iter().collect(),
             opt_flags: 1,
             stm_flags: 1,
@@ -2193,7 +2193,7 @@ mod ani_stream_roundtrip_tests {
         };
         let nam = NAM {
             start_frame: 5,
-            frames: 1,
+            num_frames: 1,
             cm3_flags: [AniTrackType::Position].into_iter().collect(),
             opt_flags: 1,
             stm_flags: 1,
@@ -2233,7 +2233,7 @@ pub struct NAM {
     #[bw(calc = 1u32)]
     version: u32,
     pub start_frame: u32,
-    pub frames: u32,
+    pub num_frames: u32,
     #[br(try_map(|v: u32| parse_ani_track_type(v)))]
     #[bw(map = encode_ani_track_type)]
     pub cm3_flags: BTreeSet<AniTrackType>,
@@ -2242,7 +2242,7 @@ pub struct NAM {
     pub opt_flags: u32,
     #[br(assert(stm_flags & 0xfff8 == 0))]
     pub stm_flags: u32,
-    #[br(parse_with = parse_ani_blocks, args(frames,&cm3_flags,opt_flags,stm_flags))]
+    #[br(parse_with = parse_ani_blocks, args(num_frames,&cm3_flags,opt_flags,stm_flags))]
     #[bw(write_with = write_ani_blocks)]
     pub tracks: Vec<BlockInfo>,
     #[br(if(cm3_flags.contains(&AniTrackType::EVA)))]
@@ -2274,8 +2274,8 @@ pub struct ANI {
     #[bw(calc = 2u32)]
     version: u32,
     pub fps: f32,
-    pub last_frame: u32,
     pub first_frame: u32,
+    pub last_frame: u32,
     #[bw(try_calc = tracks.len().try_into())]
     pub num_objects: u32,
     is_active: u32,
