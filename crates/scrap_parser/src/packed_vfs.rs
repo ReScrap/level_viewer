@@ -105,7 +105,7 @@ impl MultiPack {
         }
     }
 
-    pub fn for_each_file(&self, callback: fn(&str, &[u8])) -> Result<()> {
+    pub fn for_each_file(&self, callback: fn(&str, &[u8]) -> Result<()>) -> Result<()> {
         for packed in self.files.iter() {
             for entry in &packed.header.files {
                 let data_start = entry.offset as usize;
@@ -115,7 +115,7 @@ impl MultiPack {
                 if data_end > packed.mm.len() {
                     bail!("Entry out of bounds: {}", entry.path);
                 }
-                callback(&entry.path, &packed.mm[data_start..data_end]);
+                callback(&entry.path, &packed.mm[data_start..data_end])?;
             }
         }
         Ok(())

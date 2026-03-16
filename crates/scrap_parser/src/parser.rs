@@ -2716,6 +2716,10 @@ pub mod multi_pack_fs {
             MultiPackTransformer::new(self.pack.clone())
         }
 
+        pub fn for_each_file(&self, func: fn(&str,&[u8]) -> Result<()>) -> Result<()> {
+            self.pack.for_each_file(func)
+        }
+
         pub fn exists(&self, path: &str) -> Result<bool> {
             Ok(self.root.root().join(path).and_then(|p| p.metadata()).is_ok())
         }

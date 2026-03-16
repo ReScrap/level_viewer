@@ -372,85 +372,129 @@ fn main() -> Result<()> {
     }
     let packed_files = get_packed_files(&cli.scrapland.join("backup"))?;
     let fs = MultiPackFS::new(&packed_files)?;
-    fs
-        .transform()
-        // .patch("**/dtritus_action.cm3",|path,buffer| {
-        //     let mut cur = Cursor::new(buffer);
-        //     let Ok(data) = cur.read_le::<Data>() else {
-        //         return Ok(());
-        //     };
-        //     dbg!(data);
-        //     Ok(())
-        // })?
-        .patch("**/*.dds", |path, buffer| {
-            // println!("Processing {name}");
-            let is_lmap = path.contains("-d")||path.contains("-a");
-            if !is_lmap {
-                return Ok(());
-            }
-            use image::{RgbaImage,DynamicImage};
-            let buffer = buffer.to_mut();
-            let data = Cursor::new(buffer);
-            let mut decoder = match dds::Decoder::new(data) {
-                Ok(dec) => dec,
-                Err(err) => {
-                    println!("{path}: {err}");
-                    return Ok(());
-                }
-            };
-            let size = decoder.main_size();
-            let bpp = decoder.native_color().bytes_per_pixel() as usize;
-            let mut img_data = vec![0_u8; size.pixels() as usize * bpp];
-            let view = dds::ImageViewMut::new(&mut img_data, size, decoder.native_color()).unwrap();
-            decoder.read_surface(view)?;
-            let mut img = match decoder.native_color() {
-                ColorFormat::RGB_U8 => {
-                    let img = RgbImage::from_raw(size.width, size.height, img_data).unwrap();
-                    DynamicImage::ImageRgb8(img)
-                }
-                ColorFormat::RGBA_U8 => {
-                    let img = RgbaImage::from_raw(size.width, size.height, img_data).unwrap();
-                    DynamicImage::ImageRgba8(img)
-                }
-                other => {
-                    println!("{path}: Unsuported color format: {other}");
-                    return Ok(());
-                }
-            };
-            img=img.huerotate(180);
-            let fmt = decoder.format();
-            let hdr = decoder.header().clone();
-            let col = decoder.native_color();
-            let mut buffer = decoder.into_reader();
-            buffer.get_mut().clear();
-            buffer.seek(SeekFrom::Start(0)).unwrap();
-            let mut enc = dds::Encoder::new(buffer, fmt, &hdr)?;
-            if hdr.mipmap_count().get() > 1 {
-                enc.mipmaps.generate = true;
-            }
-            let img_out = dds::ImageView::new(img.as_bytes(), size, col).unwrap();
-            enc.write_surface(img_out)?;
-            assert!(enc.is_done());
-            Ok(())
-        })?
-        // .patch("**/*.emi", |name, buffer| {
-        //     let mut data: Data = Cursor::new(buffer.as_slice()).read_le()?;
-        //     println!("Rewriting {name}");
-        //     if let Data::EMI(emi) = &mut data {
-        //         emi.materials.iter_mut().for_each(|(_,mat)| {
-        //             // dbg!(mat.spec_mult,mat.spec_power);
-        //             mat.spec_mult=1.0;
-        //             mat.spec_power=1.0;
-        //             mat.mat_props.attrib.clear();
-        //             mat.mat_props.enable_fog = 0;
-        //         })
-        //     }
-        //     buffer.clear();
-        //     let mut cur = Cursor::new(buffer);
-        //     data.write_le(&mut cur)?;
-        //     Ok(())
-        // })?
-        .write_mod("packed_out/mod.packed")?;
+    fs.for_each_file(|path,buffer| -> Result<()> {
+        use facet_diff::{FacetDiff, format_diff_compact};
+        if ![".cm3"].iter().any(|e| path.ends_with(e)) {
+            return Ok(())
+        };
+        println!("parsing {path}");
+        let data: Data = Cursor::new(buffer).read_le()?;
+        let mut out = Cursor::new(Vec::new());
+        data.write_le(&mut out)?;
+        out.seek(SeekFrom::Start(0))?;
+        let data_2: Data = out.read_le()?;
+        let diff = &data.diff(&data_2);
+        if !diff.is_equal() {
+            let diff = format_diff_compact(diff);
+            println!("{diff}");
+        };
+        Ok(())
+    })?;
+    // fs
+    //     .transform()
+    //     .patch("**/*.cm3",|path,buffer| {
+    //         let mut cur = Cursor::new(buffer);
+    //         let Ok(Data::CM3(mut data)) = cur.read_le::<Data>() else {
+    //             return Ok(());
+    //         };
+    //         let Some(ani) = data.scene.ani.get_mut() else {
+    //             return Ok(())
+    //         };
+    //         for (_,(_,track)) in ani.tracks.iter_mut() {
+    //             // if let Some(t) = track.pos.as_mut() {
+    //             //     t.reverse();
+    //             // }
+    //             // if let Some(t) = track.rot.as_mut() {
+    //             //     t.reverse();
+    //             // }
+    //             // if let Some(t) = track.fov.as_mut() {
+    //             //     t.reverse();
+    //             // }
+    //             // if let Some(t) = track.visibility.as_mut() {
+    //             //     t.reverse();
+    //             // }
+    //             // if let Some(t) = track.color.as_mut() {
+    //             //     t.reverse();
+    //             // }
+    //             // if let Some(t) = track.intensity.as_mut() {
+    //             //     t.reverse();
+    //             // }
+    //         }
+    //         let buffer = cur.into_inner().to_mut();
+    //         buffer.clear();
+    //         let mut cur = Cursor::new(buffer);
+    //         Data::CM3(data).write_le(&mut cur)?;
+    //         Ok(())
+    //     })?
+    //     //     // println!("Processing {name}");
+    //     //     let is_lmap = path.contains("lmap")||path.contains("-d")||path.contains("-a");
+    //     //     let is_sky = path.contains("skies") && ["back","front","left","right","top","bottom"].iter().any(|k| path.contains(k));
+    //     //     if !(is_lmap||is_sky) {
+    //     //         return Ok(());
+    //     //     }
+    //     //     use image::{RgbaImage,DynamicImage};
+    //     //     let buffer = buffer.to_mut();
+    //     //     let data = Cursor::new(buffer);
+    //     //     let mut decoder = match dds::Decoder::new(data) {
+    //     //         Ok(dec) => dec,
+    //     //         Err(err) => {
+    //     //             println!("{path}: {err}");
+    //     //             return Ok(());
+    //     //         }
+    //     //     };
+    //     //     let size = decoder.main_size();
+    //     //     let bpp = decoder.native_color().bytes_per_pixel() as usize;
+    //     //     let mut img_data = vec![0_u8; size.pixels() as usize * bpp];
+    //     //     let view = dds::ImageViewMut::new(&mut img_data, size, decoder.native_color()).unwrap();
+    //     //     decoder.read_surface(view)?;
+    //     //     let mut img = match decoder.native_color() {
+    //     //         ColorFormat::RGB_U8 => {
+    //     //             let img = RgbImage::from_raw(size.width, size.height, img_data).unwrap();
+    //     //             DynamicImage::ImageRgb8(img)
+    //     //         }
+    //     //         ColorFormat::RGBA_U8 => {
+    //     //             let img = RgbaImage::from_raw(size.width, size.height, img_data).unwrap();
+    //     //             DynamicImage::ImageRgba8(img)
+    //     //         }
+    //     //         other => {
+    //     //             println!("{path}: Unsuported color format: {other}");
+    //     //             return Ok(());
+    //     //         }
+    //     //     };
+    //     //     img=img.huerotate(180);
+    //     //     let fmt = decoder.format();
+    //     //     let hdr = decoder.header().clone();
+    //     //     let col = decoder.native_color();
+    //     //     let mut buffer = decoder.into_reader();
+    //     //     buffer.get_mut().clear();
+    //     //     buffer.seek(SeekFrom::Start(0)).unwrap();
+    //     //     let mut enc = dds::Encoder::new(buffer, fmt, &hdr)?;
+    //     //     if hdr.mipmap_count().get() > 1 {
+    //     //         enc.mipmaps.generate = true;
+    //     //     }
+    //     //     let img_out = dds::ImageView::new(img.as_bytes(), size, col).unwrap();
+    //     //     enc.write_surface(img_out)?;
+    //     //     assert!(enc.is_done());
+    //     //     Ok(())
+    //     // })?
+    //     // .patch("**/*.emi", |name, buffer| {
+    //     //     let mut data: Data = Cursor::new(buffer.as_slice()).read_le()?;
+    //     //     println!("Rewriting {name}");
+    //     //     if let Data::EMI(emi) = &mut data {
+    //     //         emi.materials.iter_mut().for_each(|(_,mat)| {
+    //     //             // dbg!(mat.spec_mult,mat.spec_power);
+    //     //             mat.spec_mult=1.0;
+    //     //             mat.spec_power=1.0;
+    //     //             mat.mat_props.attrib.clear();
+    //     //             mat.mat_props.enable_fog = 0;
+    //     //         })
+    //     //     }
+    //     //     buffer.clear();
+    //     //     let mut cur = Cursor::new(buffer);
+    //     //     data.write_le(&mut cur)?;
+    //     //     Ok(())
+    //     // })?
+    //     .write_mod("packed_out/mod.packed")?;
     return Ok(());
     let fs = MultiPackFS::new(&packed_files)?;
     // for sm3_entry in &entries {

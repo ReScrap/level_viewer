@@ -24,7 +24,7 @@ vfs = "0.12"
 walkdir = "2.5"
 glob = "0.3.3"
 encoding = "0.2.33"
-facet = { version = "0.44.1", features = ["chrono", "indexmap"] }
+facet = { version = "0.43.2", features = ["chrono", "indexmap"] }
 
 [dev-dependencies]
 serde_json = { version = "1.0.149", features = ["preserve_order", "float_roundtrip"] }
