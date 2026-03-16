@@ -1775,7 +1775,7 @@ pub struct AnimFrame {
     pub fov: Option<f32>,
     pub color: Option<[u8; 4]>,
     pub intensity: Option<f32>,
-    pub visibility: Option<bool>,
+    pub visibility: Option<u8>,
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize, facet::Facet)]
@@ -1785,7 +1785,7 @@ pub struct AnimTracks {
     pub fov: Option<Vec<f32>>,
     pub color: Option<Vec<[u8; 4]>>,
     pub intensity: Option<Vec<f32>>,
-    pub visibility: Option<Vec<bool>>,
+    pub visibility: Option<Vec<u8>>,
 }
 
 impl AnimTracks {
@@ -1846,14 +1846,7 @@ fn parse_anim_tracks_from_block_data(blocks: &mut [BlockInfo], data: &[u8]) -> R
             AniTrackType::FOV => out.fov = Some(parse_track_data(payload)?),
             AniTrackType::Color => out.color = Some(parse_track_data(payload)?),
             AniTrackType::Intensity => out.intensity = Some(parse_track_data(payload)?),
-            AniTrackType::Visibility => {
-                out.visibility = Some(
-                    parse_track_data(payload)?
-                        .into_iter()
-                        .map(|v: u8| v != 0)
-                        .collect(),
-                )
-            }
+            AniTrackType::Visibility => out.visibility = Some(parse_track_data(payload)?),
             AniTrackType::EVA => (),
         }
     }
@@ -1935,8 +1928,7 @@ fn write_block_payload(block: &BlockInfo, nam: &NAM, tracks: &AnimTracks) -> Bin
                             pos: 0,
                             message: "missing ANI visibility track payload".into(),
                         })?;
-                let packed: Vec<u8> = values.iter().map(|&v| u8::from(v)).collect();
-                write_values(&packed)?
+                write_values(values)?
             }
             AniTrackType::EVA => Vec::new(),
         };
