@@ -2104,10 +2104,14 @@ fn normalize_nam_for_write(nam: &NAM, tracks: &AnimTracks) -> BinResult<NAM> {
         }
     }
 
-    let mut computed_num_frames = derived_num_frames.unwrap_or(normalized.num_frames);
     let streamed_span = max_stream_end.saturating_sub(normalized.start_frame);
-    computed_num_frames = computed_num_frames.max(streamed_span);
-    normalized.num_frames = computed_num_frames;
+    normalized.num_frames = if let Some(non_stream_frames) = derived_num_frames {
+        non_stream_frames
+    } else if streamed_span != 0 {
+        streamed_span
+    } else {
+        normalized.num_frames
+    };
 
     Ok(normalized)
 }
@@ -2426,6 +2430,55 @@ mod ani_stream_roundtrip_tests {
         assert_eq!(normalized_nam.num_frames, 2);
         assert_eq!(normalized_block.size, 24);
         assert_eq!(normalized_block.stream_header, None);
+    }
+
+    #[test]
+    fn non_stream_frame_count_is_not_expanded_by_streamed_track_range() {
+        let nam = NAM {
+            start_frame: 10,
+            num_frames: 100,
+            cm3_flags: [AniTrackType::Position, AniTrackType::Rotation]
+                .into_iter()
+                .collect(),
+            opt_flags: AniTrackType::Rotation.mask(),
+            stm_flags: AniTrackType::Rotation.mask(),
+            tracks: vec![
+                BlockInfo {
+                    size: 1200,
+                    elem_size: 12,
+                    stream: false,
+                    optimized: false,
+                    track_type: AniTrackType::Position,
+                    stream_header: None,
+                },
+                BlockInfo {
+                    size: 22,
+                    elem_size: 16,
+                    stream: true,
+                    optimized: true,
+                    track_type: AniTrackType::Rotation,
+                    stream_header: Some(AniStreamHeader {
+                        size: 22,
+                        start_frame: 80,
+                        num_frames: 1,
+                    }),
+                },
+            ],
+            eva: None,
+        };
+        let track_data = AnimTracks {
+            pos: Some(vec![[1.0, 2.0, 3.0]]),
+            rot: Some(vec![[0.0, 0.0, 0.0, 1.0]]),
+            ..Default::default()
+        };
+        let tracks: HashMap<u8, (NAM, AnimTracks)> = HashMap::from([(0, (nam, track_data))]);
+
+        let ordered = ordered_ani_tracks(&tracks).unwrap();
+        let (_, normalized_nam, _) = &ordered[0];
+
+        assert_eq!(normalized_nam.num_frames, 1);
+        assert_eq!(normalized_nam.tracks[0].size, 12);
+        assert_eq!(normalized_nam.tracks[1].size, 22);
     }
 }
 
