@@ -206,7 +206,7 @@ pub fn export_level(fs: &MultiPackFS, lvl: &Level, output_path: &Path) -> Result
 
     zf.start_file("textures.json.gz", opts)?;
     let mut comp = flate2::write::GzEncoder::new(Vec::new(), Compression::best());
-    serde_json::to_writer(&mut comp, &textures_to_export)?;
+    facet_json::to_writer_std(&mut comp, &textures_to_export)?;
     let data = comp.finish()?;
     zf.write_all(&data)?;
 
@@ -217,7 +217,7 @@ pub fn export_level(fs: &MultiPackFS, lvl: &Level, output_path: &Path) -> Result
     drop(tx);
     zf.start_file("level.json.gz", opts)?;
     let mut comp = flate2::write::GzEncoder::new(Vec::new(), Compression::best());
-    serde_json::to_writer(&mut comp, lvl)?;
+    facet_json::to_writer_std(&mut comp, lvl)?;
     let data = comp.finish()?;
     zf.write_all(&data)?;
 

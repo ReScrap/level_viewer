@@ -70,7 +70,6 @@ use scrap_parser::parser::{
     self, AniTrackType, AnimTracks, CM3, Data, Level, LightType, NodeData, ParsedData, SM3, Vertex,
     multi_pack_fs::MultiPackFS,
 };
-use serde::{Deserialize, Serialize};
 
 use crate::{
     // materials::Hologram,

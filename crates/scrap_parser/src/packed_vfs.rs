@@ -14,7 +14,6 @@ use fs_err as fs;
 use futures_lite::{AsyncRead, AsyncSeek};
 use glob::Pattern;
 use memmap2::Mmap;
-use serde::Serialize;
 use vfs::{FileSystem, SeekAndWrite, VfsMetadata, error::VfsErrorKind};
 
 use crate::parser::{PackedEntry, PackedHeader, PascalString};
@@ -52,8 +51,9 @@ pub struct MultiPack {
     pub tree: DirectoryTree,
 }
 
-#[derive(Debug, Clone, Serialize)]
-#[serde(tag = "type")]
+#[derive(Debug, Clone, facet::Facet)]
+#[facet(tag = "type")]
+#[repr(u8)]
 pub enum DirectoryTree {
     File {
         data: Range<usize>,
