@@ -1625,7 +1625,7 @@ fn convert_timestamp(dt: u32) -> Result<DateTime<Utc>> {
 
 #[binrw]
 #[bw(import_raw(compute: bool))]
-#[derive(Debug, Serialize, Deserialize, facet::Facet)]
+#[derive(Debug, Clone, Serialize, Deserialize, facet::Facet)]
 struct VertexAnim {
     #[bw(try_calc = tris.len().try_into())]
     num_triangles: u32,
@@ -1637,7 +1637,7 @@ struct VertexAnim {
 #[binrw]
 #[brw(magic = b"EVA\0")]
 #[bw(import_raw(compute: bool))]
-#[derive(Debug, Serialize, Deserialize, facet::Facet)]
+#[derive(Debug, Clone, Serialize, Deserialize, facet::Facet)]
 pub struct EVA {
     #[bw(try_calc = compute_size(self, 8, compute)?.try_into())]
     size: u32,
@@ -1901,13 +1901,13 @@ fn write_block_payload(block: &BlockInfo, nam: &NAM, tracks: &AnimTracks) -> Bin
                         pos: 0,
                         message: "ANI stream start_frame does not fit in u16".into(),
                     })?;
-            let num_frames: u16 = nam
-                .num_frames
-                .try_into()
-                .map_err(|_| binrw::Error::AssertFail {
-                    pos: 0,
-                    message: "ANI stream frame count does not fit in u16".into(),
-                })?;
+            let num_frames: u16 =
+                nam.num_frames
+                    .try_into()
+                    .map_err(|_| binrw::Error::AssertFail {
+                        pos: 0,
+                        message: "ANI stream frame count does not fit in u16".into(),
+                    })?;
             AniStreamHeader {
                 size: 0,
                 start_frame,
@@ -1946,9 +1946,175 @@ fn write_block_payload(block: &BlockInfo, nam: &NAM, tracks: &AnimTracks) -> Bin
     Ok(std::mem::take(&mut out))
 }
 
+fn track_sample_count(track_type: AniTrackType, tracks: &AnimTracks) -> BinResult<usize> {
+    match track_type {
+        AniTrackType::Position => Ok(tracks
+            .pos
+            .as_ref()
+            .ok_or_else(|| binrw::Error::AssertFail {
+                pos: 0,
+                message: "missing ANI position track payload".into(),
+            })?
+            .len()),
+        AniTrackType::Rotation => Ok(tracks
+            .rot
+            .as_ref()
+            .ok_or_else(|| binrw::Error::AssertFail {
+                pos: 0,
+                message: "missing ANI rotation track payload".into(),
+            })?
+            .len()),
+        AniTrackType::FOV => Ok(tracks
+            .fov
+            .as_ref()
+            .ok_or_else(|| binrw::Error::AssertFail {
+                pos: 0,
+                message: "missing ANI FOV track payload".into(),
+            })?
+            .len()),
+        AniTrackType::Color => Ok(tracks
+            .color
+            .as_ref()
+            .ok_or_else(|| binrw::Error::AssertFail {
+                pos: 0,
+                message: "missing ANI color track payload".into(),
+            })?
+            .len()),
+        AniTrackType::Intensity => Ok(tracks
+            .intensity
+            .as_ref()
+            .ok_or_else(|| binrw::Error::AssertFail {
+                pos: 0,
+                message: "missing ANI intensity track payload".into(),
+            })?
+            .len()),
+        AniTrackType::Visibility => Ok(tracks
+            .visibility
+            .as_ref()
+            .ok_or_else(|| binrw::Error::AssertFail {
+                pos: 0,
+                message: "missing ANI visibility track payload".into(),
+            })?
+            .len()),
+        AniTrackType::EVA => Ok(0),
+    }
+}
+
+fn normalize_nam_for_write(nam: &NAM, tracks: &AnimTracks) -> BinResult<NAM> {
+    let mut normalized = nam.clone();
+    let mut derived_num_frames: Option<u32> = None;
+    let mut max_stream_end = normalized.start_frame;
+
+    for block in &mut normalized.tracks {
+        let sample_count = track_sample_count(block.track_type, tracks)?;
+
+        if block.optimized && block.stream {
+            let sample_count_u32 =
+                u32::try_from(sample_count).map_err(|_| binrw::Error::AssertFail {
+                    pos: 0,
+                    message: "ANI stream frame count does not fit in u32".into(),
+                })?;
+            let start_frame = block
+                .stream_header
+                .map(|header| u32::from(header.start_frame))
+                .unwrap_or(normalized.start_frame);
+            let payload_size = sample_count.checked_mul(block.elem_size).ok_or_else(|| {
+                binrw::Error::AssertFail {
+                    pos: 0,
+                    message: "ANI stream payload size overflow".into(),
+                }
+            })?;
+            let block_size = std::mem::size_of::<AniStreamHeader>()
+                .checked_add(payload_size)
+                .ok_or_else(|| binrw::Error::AssertFail {
+                    pos: 0,
+                    message: "ANI stream block size overflow".into(),
+                })?;
+            let block_size_u16 =
+                u16::try_from(block_size).map_err(|_| binrw::Error::AssertFail {
+                    pos: 0,
+                    message: "ANI stream block size does not fit in u16".into(),
+                })?;
+            let start_frame_u16 =
+                u16::try_from(start_frame).map_err(|_| binrw::Error::AssertFail {
+                    pos: 0,
+                    message: "ANI stream start_frame does not fit in u16".into(),
+                })?;
+            let num_frames_u16 =
+                u16::try_from(sample_count_u32).map_err(|_| binrw::Error::AssertFail {
+                    pos: 0,
+                    message: "ANI stream frame count does not fit in u16".into(),
+                })?;
+
+            block.size = block_size;
+            block.stream_header = Some(AniStreamHeader {
+                size: block_size_u16,
+                start_frame: start_frame_u16,
+                num_frames: num_frames_u16,
+            });
+
+            let stream_end = start_frame.checked_add(sample_count_u32).ok_or_else(|| {
+                binrw::Error::AssertFail {
+                    pos: 0,
+                    message: "ANI stream frame range overflow".into(),
+                }
+            })?;
+            max_stream_end = max_stream_end.max(stream_end);
+        } else {
+            block.stream_header = None;
+
+            if block.optimized {
+                if sample_count != 1 {
+                    return Err(binrw::Error::AssertFail {
+                        pos: 0,
+                        message: format!(
+                            "optimized ANI {:?} track must contain exactly 1 sample, got {sample_count}",
+                            block.track_type
+                        ),
+                    });
+                }
+                block.size = block.elem_size;
+            } else {
+                let payload_size = sample_count.checked_mul(block.elem_size).ok_or_else(|| {
+                    binrw::Error::AssertFail {
+                        pos: 0,
+                        message: "ANI block payload size overflow".into(),
+                    }
+                })?;
+                block.size = payload_size;
+
+                let sample_count_u32 =
+                    u32::try_from(sample_count).map_err(|_| binrw::Error::AssertFail {
+                        pos: 0,
+                        message: "ANI frame count does not fit in u32".into(),
+                    })?;
+                if let Some(existing) = derived_num_frames {
+                    if existing != sample_count_u32 {
+                        return Err(binrw::Error::AssertFail {
+                            pos: 0,
+                            message: format!(
+                                "ANI non-stream tracks must have matching frame counts ({existing} != {sample_count_u32})"
+                            ),
+                        });
+                    }
+                } else {
+                    derived_num_frames = Some(sample_count_u32);
+                }
+            }
+        }
+    }
+
+    let mut computed_num_frames = derived_num_frames.unwrap_or(normalized.num_frames);
+    let streamed_span = max_stream_end.saturating_sub(normalized.start_frame);
+    computed_num_frames = computed_num_frames.max(streamed_span);
+    normalized.num_frames = computed_num_frames;
+
+    Ok(normalized)
+}
+
 fn ordered_ani_tracks(
     tracks: &HashMap<u8, (NAM, AnimTracks)>,
-) -> BinResult<Vec<(u8, &NAM, &AnimTracks)>> {
+) -> BinResult<Vec<(u8, NAM, &AnimTracks)>> {
     let mut ordered: Vec<(u8, &NAM, &AnimTracks)> = tracks
         .iter()
         .map(|(idx, (nam, track_data))| (*idx, nam, track_data))
@@ -1968,14 +2134,20 @@ fn ordered_ani_tracks(
             });
         }
     }
-    Ok(ordered)
+
+    ordered
+        .into_iter()
+        .map(|(idx, nam, track_data)| {
+            Ok((idx, normalize_nam_for_write(nam, track_data)?, track_data))
+        })
+        .collect()
 }
 
 fn build_ani_nabk_data(tracks: &HashMap<u8, (NAM, AnimTracks)>) -> BinResult<Vec<u8>> {
     let mut out = Vec::new();
     for (_, nam, track_data) in ordered_ani_tracks(tracks)? {
         for block in &nam.tracks {
-            out.extend(write_block_payload(block, nam, track_data)?);
+            out.extend(write_block_payload(block, &nam, track_data)?);
         }
     }
     Ok(out)
@@ -2091,8 +2263,10 @@ fn parse_ani_track_entries(
 
 #[cfg(test)]
 mod ani_stream_roundtrip_tests {
+    use std::collections::HashMap;
+
     use super::{
-        AniStreamHeader, AniTrackType, AnimTracks, BlockInfo, NAM,
+        AniStreamHeader, AniTrackType, AnimTracks, BlockInfo, NAM, ordered_ani_tracks,
         parse_anim_tracks_from_block_data, write_block_payload,
     };
 
@@ -2166,6 +2340,93 @@ mod ani_stream_roundtrip_tests {
         assert_eq!(u16::from_le_bytes([rebuilt[2], rebuilt[3]]), 5);
         assert_eq!(u16::from_le_bytes([rebuilt[4], rebuilt[5]]), 1);
     }
+
+    #[test]
+    fn streamed_ani_header_recomputes_num_frames_from_payload() {
+        let nam = NAM {
+            start_frame: 10,
+            num_frames: 1,
+            cm3_flags: [AniTrackType::Position].into_iter().collect(),
+            opt_flags: 1,
+            stm_flags: 1,
+            tracks: vec![BlockInfo {
+                size: 18,
+                elem_size: 12,
+                stream: true,
+                optimized: true,
+                track_type: AniTrackType::Position,
+                stream_header: Some(AniStreamHeader {
+                    size: 18,
+                    start_frame: 10,
+                    num_frames: 1,
+                }),
+            }],
+            eva: None,
+        };
+        let track_data = AnimTracks {
+            pos: Some(vec![[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]),
+            ..Default::default()
+        };
+        let tracks: HashMap<u8, (NAM, AnimTracks)> = HashMap::from([(0, (nam, track_data))]);
+
+        let ordered = ordered_ani_tracks(&tracks).unwrap();
+        let (_, normalized_nam, normalized_track_data) = &ordered[0];
+        let normalized_block = &normalized_nam.tracks[0];
+
+        assert_eq!(normalized_nam.num_frames, 2);
+        assert_eq!(normalized_block.size, 30);
+        assert_eq!(
+            normalized_block.stream_header,
+            Some(AniStreamHeader {
+                size: 30,
+                start_frame: 10,
+                num_frames: 2,
+            })
+        );
+
+        let rebuilt =
+            write_block_payload(normalized_block, normalized_nam, normalized_track_data).unwrap();
+        assert_eq!(u16::from_le_bytes([rebuilt[0], rebuilt[1]]), 30);
+        assert_eq!(u16::from_le_bytes([rebuilt[2], rebuilt[3]]), 10);
+        assert_eq!(u16::from_le_bytes([rebuilt[4], rebuilt[5]]), 2);
+    }
+
+    #[test]
+    fn non_stream_block_size_and_num_frames_follow_payload_len() {
+        let nam = NAM {
+            start_frame: 3,
+            num_frames: 99,
+            cm3_flags: [AniTrackType::Position].into_iter().collect(),
+            opt_flags: 0,
+            stm_flags: 0,
+            tracks: vec![BlockInfo {
+                size: 12,
+                elem_size: 12,
+                stream: false,
+                optimized: false,
+                track_type: AniTrackType::Position,
+                stream_header: Some(AniStreamHeader {
+                    size: 12,
+                    start_frame: 3,
+                    num_frames: 1,
+                }),
+            }],
+            eva: None,
+        };
+        let track_data = AnimTracks {
+            pos: Some(vec![[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]),
+            ..Default::default()
+        };
+        let tracks: HashMap<u8, (NAM, AnimTracks)> = HashMap::from([(0, (nam, track_data))]);
+
+        let ordered = ordered_ani_tracks(&tracks).unwrap();
+        let (_, normalized_nam, _) = &ordered[0];
+        let normalized_block = &normalized_nam.tracks[0];
+
+        assert_eq!(normalized_nam.num_frames, 2);
+        assert_eq!(normalized_block.size, 24);
+        assert_eq!(normalized_block.stream_header, None);
+    }
 }
 
 #[binrw::writer(writer, endian)]
@@ -2182,7 +2443,7 @@ fn write_ani_track_entries(
 #[binrw]
 #[brw(magic = b"NAM\0")]
 #[bw(import_raw(compute: bool))]
-#[derive(Debug, Serialize, Deserialize, facet::Facet)]
+#[derive(Debug, Clone, Serialize, Deserialize, facet::Facet)]
 pub struct NAM {
     #[bw(try_calc = compute_size(self, 8, compute)?.try_into())]
     size: u32,
