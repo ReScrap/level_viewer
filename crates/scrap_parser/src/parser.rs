@@ -1,6 +1,5 @@
 #![allow(clippy::upper_case_acronyms, non_camel_case_types)]
 use std::{
-    borrow::Borrow,
     collections::{BTreeMap, BTreeSet, HashMap},
     fmt::{Debug, Display},
     io::{BufReader, Cursor, Read, Seek, Write},
@@ -9,8 +8,8 @@ use std::{
 };
 
 use bilge::prelude::*;
-use binrw::{args, helpers::until_exclusive, meta::WriteEndian, prelude::*};
-use chrono::{DateTime, Utc, naive::serde::ts_microseconds_option::deserialize};
+use binrw::{args, helpers::until_exclusive, prelude::*};
+use chrono::{DateTime, Utc};
 use color_eyre::eyre::{Context, Result, anyhow, bail};
 use configparser::ini::{Ini, IniDefault};
 use encoding::{DecoderTrap, EncoderTrap, Encoding, all::WINDOWS_1252};
@@ -1113,7 +1112,8 @@ pub struct MD3D {
     pub child: Option<Box<MD3D>>,
 }
 
-#[binread]
+#[binrw]
+#[bw(import_raw(compute: bool))]
 #[derive(Debug, Serialize, Deserialize, facet::Facet)]
 #[serde(tag = "type")]
 #[repr(u32)]
@@ -1123,64 +1123,21 @@ pub enum NodeData {
     #[brw(magic = 0xa1_00_00_01_u32)]
     TriangleMesh,
     #[brw(magic = 0xa1_00_00_02_u32)]
-    D3DMesh(Box<MD3D>),
+    D3DMesh(#[bw(args_raw = compute)] Box<MD3D>),
     #[brw(magic = 0xa2_00_00_04_u32)]
-    Camera(CAM),
+    Camera(#[bw(args_raw = compute)] CAM),
     #[brw(magic = 0xa3_00_00_08_u32)]
-    Light(LUZ),
+    Light(#[bw(args_raw = compute)] LUZ),
     #[brw(magic = 0xa4_00_00_10_u32)]
-    Ground(SUEL),
+    Ground(#[bw(args_raw = compute)] SUEL),
     #[brw(magic = 0xa5_00_00_20_u32)]
     SistPart,
     #[brw(magic = 0xa6_00_00_40_u32)]
-    Graphic3D(SPR3),
+    Graphic3D(#[bw(args_raw = compute)] SPR3),
     #[brw(magic = 0xa6_00_00_80_u32)]
     Flare,
     #[brw(magic = 0xa7_00_01_00u32)]
-    Portal(PORT),
-}
-
-impl BinWrite for NodeData {
-    type Args<'a> = bool;
-
-    fn write_options<W: Write + Seek>(
-        &self,
-        writer: &mut W,
-        endian: binrw::Endian,
-        compute: Self::Args<'_>,
-    ) -> BinResult<()> {
-        match self {
-            NodeData::Dummy => 0x0u32.write_options(writer, endian, ())?,
-            NodeData::TriangleMesh => 0xa1_00_00_01_u32.write_options(writer, endian, ())?,
-            NodeData::D3DMesh(data) => {
-                0xa1_00_00_02_u32.write_options(writer, endian, ())?;
-                data.write_options(writer, endian, compute)?;
-            }
-            NodeData::Camera(data) => {
-                0xa2_00_00_04_u32.write_options(writer, endian, ())?;
-                data.write_options(writer, endian, compute)?;
-            }
-            NodeData::Light(data) => {
-                0xa3_00_00_08_u32.write_options(writer, endian, ())?;
-                data.write_options(writer, endian, compute)?;
-            }
-            NodeData::Ground(data) => {
-                0xa4_00_00_10_u32.write_options(writer, endian, ())?;
-                data.write_options(writer, endian, compute)?;
-            }
-            NodeData::SistPart => 0xa5_00_00_20_u32.write_options(writer, endian, ())?,
-            NodeData::Graphic3D(data) => {
-                0xa6_00_00_40_u32.write_options(writer, endian, ())?;
-                data.write_options(writer, endian, compute)?;
-            }
-            NodeData::Flare => 0xa6_00_00_80_u32.write_options(writer, endian, ())?,
-            NodeData::Portal(data) => {
-                0xa7_00_01_00u32.write_options(writer, endian, ())?;
-                data.write_options(writer, endian, compute)?;
-            }
-        }
-        Ok(())
-    }
+    Portal(#[bw(args_raw = compute)] PORT),
 }
 
 #[binrw]
@@ -2304,6 +2261,16 @@ impl ANI {
     }
 }
 
+fn collect_scene_material_dependencies(scene: &SCN) -> Vec<String> {
+    let mut deps = vec![];
+    for mat in &scene.mat {
+        for map in mat.maps.iter().flat_map(|m| m.value.as_ref()) {
+            deps.push(map.texture.string.clone())
+        }
+    }
+    deps
+}
+
 #[binrw]
 #[bw(import_raw(compute: bool))]
 #[derive(Debug, Serialize, Deserialize, facet::Facet)]
@@ -2325,13 +2292,7 @@ pub struct SM3 {
 
 impl SM3 {
     fn dependencies(&self) -> Vec<String> {
-        let mut deps = vec![];
-        for mat in &self.scene.mat {
-            for map in mat.maps.iter().flat_map(|m| m.value.as_ref()) {
-                deps.push(map.texture.string.clone())
-            }
-        }
-        deps
+        collect_scene_material_dependencies(&self.scene)
     }
 }
 
@@ -2356,13 +2317,7 @@ pub struct CM3 {
 
 impl CM3 {
     fn dependencies(&self) -> Vec<String> {
-        let mut deps = vec![];
-        for mat in &self.scene.mat {
-            for map in mat.maps.iter().flat_map(|m| m.value.as_ref()) {
-                deps.push(map.texture.string.clone())
-            }
-        }
-        deps
+        collect_scene_material_dependencies(&self.scene)
     }
 }
 
