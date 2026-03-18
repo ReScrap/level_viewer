@@ -2002,6 +2002,33 @@ fn track_sample_count(track_type: AniTrackType, tracks: &AnimTracks) -> BinResul
 
 fn normalize_nam_for_write(nam: &NAM, tracks: &AnimTracks) -> BinResult<NAM> {
     let mut normalized = nam.clone();
+    let mut existing_blocks: BTreeMap<AniTrackType, BlockInfo> = normalized
+        .tracks
+        .drain(..)
+        .map(|b| (b.track_type, b))
+        .collect();
+    normalized.tracks = normalized
+        .cm3_flags
+        .iter()
+        .map(|track_type| {
+            let mut block = existing_blocks
+                .remove(track_type)
+                .unwrap_or_else(|| BlockInfo {
+                    size: track_type.size(),
+                    elem_size: track_type.size(),
+                    stream: false,
+                    optimized: false,
+                    track_type: *track_type,
+                    stream_header: None,
+                });
+            block.track_type = *track_type;
+            block.elem_size = track_type.size();
+            block.optimized = (normalized.opt_flags & track_type.mask()) != 0;
+            block.stream = (normalized.stm_flags & track_type.mask()) != 0;
+            block
+        })
+        .collect();
+
     let mut derived_num_frames: Option<u32> = None;
     let mut max_stream_end = normalized.start_frame;
 
@@ -2113,6 +2140,37 @@ fn normalize_nam_for_write(nam: &NAM, tracks: &AnimTracks) -> BinResult<NAM> {
         normalized.num_frames
     };
 
+    for block in &mut normalized.tracks {
+        if !(block.optimized && block.stream) {
+            continue;
+        }
+        let Some(mut header) = block.stream_header else {
+            continue;
+        };
+
+        let stream_frames = u32::from(header.num_frames);
+        if stream_frames > normalized.num_frames {
+            return Err(binrw::Error::AssertFail {
+                pos: 0,
+                message: format!(
+                    "ANI streamed {:?} frame count {stream_frames} exceeds NAM frame count {}",
+                    block.track_type, normalized.num_frames
+                ),
+            });
+        }
+
+        let max_start = normalized
+            .start_frame
+            .saturating_add(normalized.num_frames.saturating_sub(stream_frames));
+        let clamped_start = u32::from(header.start_frame).clamp(normalized.start_frame, max_start);
+        header.start_frame =
+            u16::try_from(clamped_start).map_err(|_| binrw::Error::AssertFail {
+                pos: 0,
+                message: "ANI stream start_frame does not fit in u16".into(),
+            })?;
+        block.stream_header = Some(header);
+    }
+
     Ok(normalized)
 }
 
@@ -2147,13 +2205,73 @@ fn ordered_ani_tracks(
         .collect()
 }
 
+fn expected_nam_data_size(nam: &NAM) -> BinResult<usize> {
+    let frame_count: usize = nam
+        .num_frames
+        .try_into()
+        .map_err(|_| binrw::Error::AssertFail {
+            pos: 0,
+            message: "ANI frame count does not fit in usize".into(),
+        })?;
+
+    let mut total = 0usize;
+    for block in &nam.tracks {
+        if block.track_type == AniTrackType::EVA {
+            continue;
+        }
+        let optimized = (nam.opt_flags & block.track_type.mask()) != 0;
+        let streamed = optimized && (nam.stm_flags & block.track_type.mask()) != 0;
+
+        let expected = if streamed {
+            block.size
+        } else if optimized {
+            block.elem_size
+        } else {
+            frame_count
+                .checked_mul(block.elem_size)
+                .ok_or_else(|| binrw::Error::AssertFail {
+                    pos: 0,
+                    message: "ANI non-stream expected size overflow".into(),
+                })?
+        };
+
+        total = total
+            .checked_add(expected)
+            .ok_or_else(|| binrw::Error::AssertFail {
+                pos: 0,
+                message: "ANI total expected size overflow".into(),
+            })?;
+    }
+
+    Ok(total)
+}
+
 fn build_ani_nabk_data(tracks: &HashMap<u8, (NAM, AnimTracks)>) -> BinResult<Vec<u8>> {
+    let ordered = ordered_ani_tracks(tracks)?;
     let mut out = Vec::new();
-    for (_, nam, track_data) in ordered_ani_tracks(tracks)? {
+    let mut expected_total = 0usize;
+    for (_, nam, track_data) in &ordered {
+        expected_total = expected_total
+            .checked_add(expected_nam_data_size(nam)?)
+            .ok_or_else(|| binrw::Error::AssertFail {
+                pos: 0,
+                message: "ANI expected data size overflow".into(),
+            })?;
         for block in &nam.tracks {
-            out.extend(write_block_payload(block, &nam, track_data)?);
+            out.extend(write_block_payload(block, nam, track_data)?);
         }
     }
+
+    if out.len() != expected_total {
+        return Err(binrw::Error::AssertFail {
+            pos: 0,
+            message: format!(
+                "ANI NABK payload size mismatch: {} != {expected_total}",
+                out.len()
+            ),
+        });
+    }
+
     Ok(out)
 }
 
@@ -2270,8 +2388,8 @@ mod ani_stream_roundtrip_tests {
     use std::collections::HashMap;
 
     use super::{
-        AniStreamHeader, AniTrackType, AnimTracks, BlockInfo, NAM, ordered_ani_tracks,
-        parse_anim_tracks_from_block_data, write_block_payload,
+        AniStreamHeader, AniTrackType, AnimTracks, BlockInfo, NAM, expected_nam_data_size,
+        ordered_ani_tracks, parse_anim_tracks_from_block_data, write_block_payload,
     };
 
     #[test]
@@ -2479,6 +2597,54 @@ mod ani_stream_roundtrip_tests {
         assert_eq!(normalized_nam.num_frames, 1);
         assert_eq!(normalized_nam.tracks[0].size, 12);
         assert_eq!(normalized_nam.tracks[1].size, 22);
+        assert_eq!(
+            normalized_nam.tracks[1].stream_header,
+            Some(AniStreamHeader {
+                size: 22,
+                start_frame: 10,
+                num_frames: 1,
+            })
+        );
+    }
+
+    #[test]
+    fn block_optimization_mode_is_rederived_from_flags() {
+        let nam = NAM {
+            start_frame: 0,
+            num_frames: 5,
+            cm3_flags: [AniTrackType::Position].into_iter().collect(),
+            opt_flags: 0,
+            stm_flags: 0,
+            tracks: vec![BlockInfo {
+                size: 18,
+                elem_size: 12,
+                stream: true,
+                optimized: true,
+                track_type: AniTrackType::Position,
+                stream_header: Some(AniStreamHeader {
+                    size: 18,
+                    start_frame: 0,
+                    num_frames: 1,
+                }),
+            }],
+            eva: None,
+        };
+        let track_data = AnimTracks {
+            pos: Some(vec![[1.0, 2.0, 3.0]]),
+            ..Default::default()
+        };
+        let tracks: HashMap<u8, (NAM, AnimTracks)> = HashMap::from([(0, (nam, track_data))]);
+
+        let ordered = ordered_ani_tracks(&tracks).unwrap();
+        let (_, normalized_nam, _) = &ordered[0];
+        let normalized_block = &normalized_nam.tracks[0];
+
+        assert!(!normalized_block.optimized);
+        assert!(!normalized_block.stream);
+        assert_eq!(normalized_block.size, 12);
+        assert_eq!(normalized_block.stream_header, None);
+        assert_eq!(normalized_nam.num_frames, 1);
+        assert_eq!(expected_nam_data_size(normalized_nam).unwrap(), 12);
     }
 }
 
